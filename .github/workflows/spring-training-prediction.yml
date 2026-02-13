@@ -1,0 +1,116 @@
+name: Spring Training HR Prediction
+
+on:
+  # Run weekly during spring training (Feb-Mar)
+  schedule:
+    - cron: '0 12 * 2-3 1'  # Every Monday at noon UTC, Feb-Mar
+  # Allow manual runs
+  workflow_dispatch:
+    inputs:
+      min_pa:
+        description: 'Minimum plate appearances to include a player'
+        required: false
+        default: '10'
+      st_end_date:
+        description: 'End date for spring training data (YYYY-MM-DD, blank for today)'
+        required: false
+        default: ''
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.3.2'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: r-packages-${{ runner.os }}-${{ hashFiles('spring_training_hr_prediction.R') }}
+          restore-keys: |
+            r-packages-${{ runner.os }}-
+
+      - name: Install R packages
+        run: |
+          install.packages(c(
+            "dplyr", "tidyr", "purrr", "stringr", "lubridate",
+            "readr", "tibble", "gbm", "httr", "jsonlite",
+            "sabRmetrics"
+          ), repos = "https://cloud.r-project.org")
+        shell: Rscript {0}
+
+      - name: Create output directories
+        run: |
+          mkdir -p output cache
+
+      - name: Run spring training HR prediction
+        run: |
+          # Override config if inputs provided
+          config_lines <- c()
+
+          end_date <- "${{ github.event.inputs.st_end_date }}"
+          if (nchar(end_date) > 0) {
+            config_lines <- c(config_lines, sprintf('ST_END <- "%s"', end_date))
+          }
+
+          min_pa <- "${{ github.event.inputs.min_pa }}"
+          if (nchar(min_pa) > 0 && min_pa != "10") {
+            config_lines <- c(config_lines, sprintf('MIN_PA <- %s', min_pa))
+          }
+
+          # Source the script (which runs automatically)
+          source("spring_training_hr_prediction.R")
+
+          # Apply any overrides and re-run if needed
+          if (length(config_lines) > 0) {
+            for (line in config_lines) eval(parse(text = line))
+            predict_spring_hr_gainers(verbose = TRUE)
+          }
+        shell: Rscript {0}
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spring-training-hr-predictions
+          path: |
+            output/spring_training_hr_prediction_*.csv
+            output/spring_training_hr_report_*.md
+          retention-days: 90
+
+      - name: Post results summary to job output
+        run: |
+          # Find the most recent report
+          reports <- list.files("output", pattern = "spring_training_hr_report_.*\\.md$",
+                                full.names = TRUE)
+          if (length(reports) > 0) {
+            report <- reports[length(reports)]
+            cat("### Spring Training HR Prediction Results\n\n")
+            cat(readLines(report), sep = "\n")
+          } else {
+            cat("No report generated.\n")
+          }
+        shell: Rscript {0}
+
+      - name: Write job summary
+        run: |
+          REPORT=$(ls -t output/spring_training_hr_report_*.md 2>/dev/null | head -1)
+          if [ -n "$REPORT" ]; then
+            cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
