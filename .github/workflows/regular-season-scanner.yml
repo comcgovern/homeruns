@@ -1,0 +1,101 @@
+name: Regular Season Breakout Scanner
+
+on:
+  # Run weekly during the regular season (Apr-Sep)
+  schedule:
+    - cron: '0 12 * 4-9 1'  # Every Monday at noon UTC, Apr-Sep
+  # Allow manual runs
+  workflow_dispatch:
+    inputs:
+      min_bbe:
+        description: 'Minimum batted ball events to include a player'
+        required: false
+        default: '50'
+      scan_end_date:
+        description: 'End date for scan data (YYYY-MM-DD, blank for today)'
+        required: false
+        default: ''
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: '4.3.2'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
+
+      - name: Cache R packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.R_LIBS_USER }}
+          key: r-packages-${{ runner.os }}-${{ hashFiles('early_season_scanner.R') }}
+          restore-keys: |
+            r-packages-${{ runner.os }}-
+
+      - name: Install R packages
+        run: |
+          install.packages(c(
+            "dplyr", "tidyr", "purrr", "stringr", "lubridate",
+            "readr", "tibble", "gbm", "httr", "jsonlite",
+            "sabRmetrics"
+          ), repos = "https://cloud.r-project.org")
+        shell: Rscript {0}
+
+      - name: Create output directories
+        run: |
+          mkdir -p output cache
+
+      - name: Run early season breakout scanner
+        run: |
+          # Apply overrides from workflow inputs
+          end_date <- "${{ github.event.inputs.scan_end_date }}"
+          if (nchar(end_date) > 0) {
+            SCAN_END <<- as.Date(end_date)
+          }
+
+          min_bbe <- "${{ github.event.inputs.min_bbe }}"
+          if (nchar(min_bbe) > 0 && min_bbe != "50") {
+            MIN_BBE_SCAN <<- as.integer(min_bbe)
+          }
+
+          source("early_season_scanner.R")
+        shell: Rscript {0}
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: regular-season-breakout-scan
+          path: |
+            output/early_scan_*.csv
+          retention-days: 90
+
+      - name: Write job summary
+        run: |
+          CSV=$(ls -t output/early_scan_*.csv 2>/dev/null | head -1)
+          if [ -n "$CSV" ]; then
+            echo "### Regular Season Breakout Scan Results" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Scan file:** \`$(basename "$CSV")\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "#### Top 15 Breakout Candidates" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            # Convert CSV top rows to markdown table
+            head -1 "$CSV" | sed 's/,/|/g' | sed 's/^/|/' | sed 's/$/|/' >> "$GITHUB_STEP_SUMMARY"
+            head -1 "$CSV" | sed 's/[^,]*/---|/g' | sed 's/^/|/' >> "$GITHUB_STEP_SUMMARY"
+            tail -n +2 "$CSV" | head -15 | sed 's/,/|/g' | sed 's/^/|/' | sed 's/$/|/' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No results generated." >> "$GITHUB_STEP_SUMMARY"
+          fi
