@@ -58,6 +58,10 @@ jobs:
         run: |
           mkdir -p output cache
 
+      - name: Train the breakout model
+        run: Rscript hr_bbe_analysis.R
+        shell: bash
+
       - name: Run early season breakout scanner
         run: |
           # Apply overrides from workflow inputs
