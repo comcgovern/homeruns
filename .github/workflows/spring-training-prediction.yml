@@ -1,9 +1,9 @@
 name: Spring Training HR Prediction
 
 on:
-  # Run weekly during spring training (Feb-Mar)
+  # Run weekly during spring training (starts March to ensure sufficient data)
   schedule:
-    - cron: '0 12 * 2-3 1'  # Every Monday at noon UTC, Feb-Mar
+    - cron: '0 12 * 3 1'  # Every Monday at noon UTC in March
   # Allow manual runs
   workflow_dispatch:
     inputs:
@@ -57,6 +57,10 @@ jobs:
       - name: Create output directories
         run: |
           mkdir -p output cache
+
+      - name: Train the breakout model
+        run: Rscript hr_bbe_analysis.R
+        shell: bash
 
       - name: Run spring training HR prediction
         run: |

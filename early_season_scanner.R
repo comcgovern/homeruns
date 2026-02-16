@@ -72,29 +72,183 @@ coalesce_batter_id <- function(df) {
 # DATA LOADING
 # ============================================================================
 
-load_statcast_range <- function(start_date, end_date, game_type = "R", 
-                                 level = "MLB", verbose = TRUE) {
-  
-  if (!requireNamespace("sabRmetrics", quietly = TRUE)) {
-    stop("Please install 'sabRmetrics': install.packages('sabRmetrics')")
+load_statcast_range <- function(start_date, end_date, game_type = "R", level = "MLB", verbose = TRUE) {
+
+  # For MLB, use sabRmetrics (it works perfectly)
+  if (level == "MLB") {
+    if (!requireNamespace("sabRmetrics", quietly = TRUE)) {
+      stop("Please install 'sabRmetrics' (install.packages('sabRmetrics')).")
+    }
+    if (verbose) message("Downloading Savant (MLB): ", start_date, " -> ", end_date, " | game_type=", game_type)
+    df <- try(sabRmetrics::download_baseballsavant(
+      start_date = start_date,
+      end_date   = end_date,
+      game_type  = game_type,
+      cl         = NULL,
+      verbose    = verbose
+    ), silent = TRUE)
+    if (inherits(df, "try-error") || is.null(df) || nrow(df) == 0) {
+      warning("No Savant rows returned for this window.")
+      return(tibble())
+    }
+    return(tibble::as_tibble(df))
   }
-  
-  if (verbose) message("Downloading Savant (", level, "): ", start_date, " -> ", end_date)
-  
-  df <- try(sabRmetrics::download_baseballsavant(
-    start_date = start_date,
-    end_date   = end_date,
-    game_type  = game_type,
-    cl         = NULL,
-    verbose    = verbose
-  ), silent = TRUE)
-  
-  if (inherits(df, "try-error") || is.null(df) || nrow(df) == 0) {
-    warning("No Savant rows returned for this window.")
+
+  # For AAA, use minors endpoint with sabRmetrics-style chunking
+  if (verbose) message("Downloading Savant (AAA): ", start_date, " -> ", end_date, " | game_type=", game_type)
+
+  if (!requireNamespace("httr", quietly = TRUE)) {
+    stop("Please install 'httr': install.packages('httr')")
+  }
+  if (!requireNamespace("readr", quietly = TRUE)) {
+    stop("Please install 'readr': install.packages('readr')")
+  }
+
+  # Split into 5-day chunks (same as sabRmetrics strategy)
+  start <- as.Date(start_date)
+  end <- as.Date(end_date)
+  days <- as.numeric(end - start)
+
+  # Build payload of URLs for each chunk
+  payload <- tibble::tibble(
+    start_chunk = seq(start, by = 5, length.out = ceiling((days + 1) / 5))
+  ) %>%
+    dplyr::mutate(
+      end_chunk = pmin(.data$start_chunk + 4, end),
+      chunk_id = dplyr::row_number()
+    )
+
+  # Build URLs for each chunk
+  base_url <- "https://baseballsavant.mlb.com/statcast-search-minors/csv"
+
+  payload <- payload %>%
+    dplyr::mutate(
+      game_type_filter = paste0("hfGT=", game_type, "%7C"),
+      date_filter = sprintf("game_date_gt=%s&game_date_lt=%s", .data$start_chunk, .data$end_chunk),
+      level_filter = "hfLevel=AAA%7C",
+      season_filter = paste0("hfSea=", format(start, "%Y"), "%7C"),
+      url = paste0(
+        base_url,
+        "?all=true",
+        "&type=details",
+        "&minors=true",
+        "&player_type=pitcher",
+        "&", .data$game_type_filter,
+        "&", .data$date_filter,
+        "&", .data$level_filter,
+        "&", .data$season_filter,
+        "&group_by=name",
+        "&min_pitches=0",
+        "&min_results=0"
+      )
+    )
+
+  n_chunks <- nrow(payload)
+  if (verbose) message("Downloading ", n_chunks, " chunk(s) (5-day periods)...")
+
+  # Step 1: Submit initial requests (like sabRmetrics does)
+  if (verbose) message("Submitting initial API requests...")
+  initial_requests <- lapply(payload$url, function(url) {
+    try(httr::GET(url, httr::timeout(1)), silent = TRUE)
+  })
+
+  # Step 2: Download with proper timeout, retrying as needed
+  if (verbose) message("Downloading data chunks...")
+
+  data_list <- vector("list", n_chunks)
+  names(data_list) <- paste0("chunk_", payload$chunk_id)
+  is_error <- rep(TRUE, n_chunks)
+
+  max_retries <- 3
+  retry_count <- 0
+
+  while (any(is_error) && retry_count < max_retries) {
+    retry_count <- retry_count + 1
+
+    if (retry_count > 1 && verbose) {
+      message("Retry attempt ", retry_count, " for ", sum(is_error), " chunk(s)...")
+    }
+
+    for (i in which(is_error)) {
+      if (verbose) message(sprintf("  Chunk %d/%d: %s to %s",
+                                    i, n_chunks,
+                                    payload$start_chunk[i],
+                                    payload$end_chunk[i]))
+
+      response <- try(httr::GET(payload$url[i], httr::timeout(120)), silent = TRUE)
+
+      if (inherits(response, "try-error")) {
+        if (verbose) message("    ✗ Connection error")
+        next
+      }
+
+      if (httr::http_error(response)) {
+        if (verbose) message("    ✗ HTTP ", httr::status_code(response))
+        next
+      }
+
+      content <- httr::content(response, as = "text", encoding = "UTF-8")
+
+      if (nchar(content) < 100) {
+        if (verbose) message("    • No data (likely no games)")
+        data_list[[i]] <- NULL
+        is_error[i] <- FALSE
+        next
+      }
+
+      if (grepl("<html", content, ignore.case = TRUE)) {
+        if (verbose) message("    ✗ Got HTML error page")
+        next
+      }
+
+      chunk_data <- try(readr::read_csv(content, show_col_types = FALSE), silent = TRUE)
+
+      if (inherits(chunk_data, "try-error")) {
+        if (verbose) message("    ✗ CSV parse error")
+        next
+      }
+
+      if (nrow(chunk_data) == 0) {
+        if (verbose) message("    • No data")
+        data_list[[i]] <- NULL
+        is_error[i] <- FALSE
+        next
+      }
+
+      data_list[[i]] <- chunk_data
+      is_error[i] <- FALSE
+      if (verbose) message("    ✓ ", nrow(chunk_data), " rows")
+
+      if (nrow(chunk_data) == 25000) {
+        warning(sprintf("Chunk %d returned exactly 25,000 rows - data may be truncated", i))
+      }
+
+      Sys.sleep(1)
+    }
+  }
+
+  if (any(is_error)) {
+    warning(sprintf("%d chunk(s) failed after %d retries", sum(is_error), max_retries))
+  }
+
+  successful_data <- data_list[!sapply(data_list, is.null)]
+
+  if (length(successful_data) == 0) {
+    warning("No AAA data returned for this window.")
     return(tibble())
   }
-  
-  tibble::as_tibble(df)
+
+  combined <- dplyr::bind_rows(successful_data)
+
+  chunk_sizes <- sapply(successful_data, nrow)
+  if (any(chunk_sizes == 25000)) {
+    n_at_limit <- sum(chunk_sizes == 25000)
+    warning(sprintf("%d chunk(s) returned exactly 25,000 rows. Data are likely missing.", n_at_limit))
+  }
+
+  if (verbose) message("✓ Total AAA rows: ", nrow(combined))
+
+  tibble::as_tibble(combined)
 }
 
 # ============================================================================
@@ -292,7 +446,87 @@ scan_early_season <- function(model_path = MODEL_PATH,
     message("  Baseline players: ", nrow(baseline_data))
     message("  Model predictors: ", paste(model_pkg$predictors, collapse = ", "))
   }
-  
+
+  # ========== AUGMENT BASELINE WITH AAA DATA (for <50 PA players) ==========
+  if (verbose) message("\nLoading AAA baseline data for players with <50 MLB PA...")
+
+  # Identify players in baseline_data with <50 PA
+  low_pa_players <- baseline_data %>%
+    filter(pa < 50) %>%
+    pull(batter)
+
+  if (verbose) message("  Found ", length(low_pa_players), " MLB players with <50 PA in ", baseline_year)
+
+  # Load AAA data for the baseline year
+  aaa_cache_file <- sprintf("%s/savant_aaa_%d.Rds", CACHE_DIR, baseline_year)
+
+  if (file.exists(aaa_cache_file)) {
+    if (verbose) message("  Using cached AAA data: ", aaa_cache_file)
+    raw_aaa <- readRDS(aaa_cache_file)
+  } else {
+    if (verbose) message("  Downloading ", baseline_year, " AAA data...")
+    aaa_start <- sprintf("%d-03-01", baseline_year)
+    aaa_end <- sprintf("%d-09-30", baseline_year)
+
+    raw_aaa <- try(load_statcast_range(
+      start_date = aaa_start,
+      end_date = aaa_end,
+      game_type = "R",
+      level = "AAA",
+      verbose = verbose
+    ), silent = TRUE)
+
+    if (!inherits(raw_aaa, "try-error") && nrow(raw_aaa) > 0) {
+      saveRDS(raw_aaa, aaa_cache_file)
+      if (verbose) message("  Cached to ", aaa_cache_file)
+    } else {
+      if (verbose) message("  No AAA data available")
+      raw_aaa <- tibble()
+    }
+  }
+
+  # Aggregate AAA data if we have any
+  aaa_baseline <- tibble()
+  if (nrow(raw_aaa) > 0) {
+    aaa_baseline <- aggregate_batter_season(raw_aaa, baseline_year, min_bbe = 50, verbose = verbose)
+
+    if (nrow(aaa_baseline) > 0) {
+      # Add a flag to track data source
+      aaa_baseline <- aaa_baseline %>% mutate(data_source = "AAA")
+      baseline_data <- baseline_data %>% mutate(data_source = "MLB")
+
+      # For low-PA MLB players, replace their baseline with AAA if available
+      aaa_replacements <- aaa_baseline %>%
+        filter(batter %in% low_pa_players)
+
+      if (nrow(aaa_replacements) > 0) {
+        if (verbose) message("  Replacing ", nrow(aaa_replacements), " low-PA MLB baselines with AAA data")
+
+        # Remove low-PA players from MLB baseline
+        baseline_data <- baseline_data %>%
+          filter(!batter %in% aaa_replacements$batter)
+
+        # Add AAA baselines
+        baseline_data <- bind_rows(baseline_data, aaa_replacements)
+      }
+
+      # Also add pure AAA prospects (not in MLB baseline at all)
+      aaa_only <- aaa_baseline %>%
+        filter(!batter %in% baseline_data$batter)
+
+      if (nrow(aaa_only) > 0) {
+        if (verbose) message("  Adding ", nrow(aaa_only), " AAA-only prospects to baseline")
+        baseline_data <- bind_rows(baseline_data, aaa_only)
+      }
+    }
+  }
+
+  if (verbose) {
+    mlb_count <- sum(baseline_data$data_source == "MLB", na.rm = TRUE)
+    aaa_count <- sum(baseline_data$data_source == "AAA", na.rm = TRUE)
+    message("  Final baseline: ", mlb_count, " MLB + ", aaa_count, " AAA = ", nrow(baseline_data), " total players")
+  }
+
   # ========== LOAD CURRENT SEASON DATA ==========
   if (verbose) {
     message("\n⬇️ Downloading ", SCAN_YEAR, " data: ", scan_start, " to ", scan_end)
