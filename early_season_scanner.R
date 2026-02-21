@@ -132,7 +132,7 @@ load_statcast_range <- function(start_date, end_date, game_type = "R", level = "
         "?all=true",
         "&type=details",
         "&minors=true",
-        "&player_type=pitcher",
+        "&player_type=batter",
         "&", .data$game_type_filter,
         "&", .data$date_filter,
         "&", .data$level_filter,
@@ -487,13 +487,12 @@ scan_early_season <- function(model_path = MODEL_PATH,
 
   # Aggregate AAA data if we have any
   aaa_baseline <- tibble()
+  baseline_data <- baseline_data %>% mutate(data_source = "MLB")
   if (nrow(raw_aaa) > 0) {
     aaa_baseline <- aggregate_batter_season(raw_aaa, baseline_year, min_bbe = 50, verbose = verbose)
 
     if (nrow(aaa_baseline) > 0) {
-      # Add a flag to track data source
       aaa_baseline <- aaa_baseline %>% mutate(data_source = "AAA")
-      baseline_data <- baseline_data %>% mutate(data_source = "MLB")
 
       # For low-PA MLB players, replace their baseline with AAA if available
       aaa_replacements <- aaa_baseline %>%

@@ -137,7 +137,7 @@ load_statcast_range <- function(start_date, end_date, game_type = "R", level = "
         "?all=true",
         "&type=details",
         "&minors=true",
-        "&player_type=pitcher",
+        "&player_type=batter",
         "&", .data$game_type_filter,
         "&", .data$date_filter,
         "&", .data$level_filter,
