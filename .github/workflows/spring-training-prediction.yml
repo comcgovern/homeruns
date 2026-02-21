@@ -3,7 +3,7 @@ name: Spring Training HR Prediction
 on:
   # Run weekly during spring training (starts March to ensure sufficient data)
   schedule:
-    - cron: '0 12 * 3 1'  # Every Monday at noon UTC in March
+    - cron: '0 12 * 2-3 1'  # Every Monday at noon UTC in February and March
   # Allow manual runs
   workflow_dispatch:
     inputs:
@@ -63,28 +63,29 @@ jobs:
         shell: bash
 
       - name: Run spring training HR prediction
+        env:
+          INPUT_MIN_PA: ${{ github.event.inputs.min_pa }}
+          INPUT_ST_END_DATE: ${{ github.event.inputs.st_end_date }}
         run: |
-          # Override config if inputs provided
-          config_lines <- c()
-
-          end_date <- "${{ github.event.inputs.st_end_date }}"
-          if (nchar(end_date) > 0) {
-            config_lines <- c(config_lines, sprintf('ST_END <- "%s"', end_date))
-          }
-
-          min_pa <- "${{ github.event.inputs.min_pa }}"
-          if (nchar(min_pa) > 0 && min_pa != "10") {
-            config_lines <- c(config_lines, sprintf('MIN_PA <- %s', min_pa))
-          }
-
-          # Source the script (which runs automatically)
+          # Source the script without auto-running (set flag to suppress)
+          args_backup <- commandArgs
+          commandArgs <- function(trailingOnly = FALSE) if (trailingOnly) "no-auto-run" else args_backup()
           source("spring_training_hr_prediction.R")
+          commandArgs <- args_backup
 
-          # Apply any overrides and re-run if needed
-          if (length(config_lines) > 0) {
-            for (line in config_lines) eval(parse(text = line))
-            predict_spring_hr_gainers(verbose = TRUE)
+          # Apply overrides from environment variables (avoids eval/parse injection)
+          end_date <- Sys.getenv("INPUT_ST_END_DATE", "")
+          if (nchar(end_date) > 0) {
+            ST_END <<- end_date
           }
+
+          min_pa_str <- Sys.getenv("INPUT_MIN_PA", "10")
+          min_pa_val <- suppressWarnings(as.integer(min_pa_str))
+          if (!is.na(min_pa_val)) {
+            MIN_PA <<- min_pa_val
+          }
+
+          predict_spring_hr_gainers(verbose = TRUE)
         shell: Rscript {0}
 
       - name: Upload results as artifact
