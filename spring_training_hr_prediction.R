@@ -318,6 +318,7 @@ aggregate_spring_training <- function(df, year, min_pa = MIN_PA, verbose = TRUE)
   if (!"bat_speed" %in% names(df)) df$bat_speed <- NA_real_
   if (!"swing_length" %in% names(df)) df$swing_length <- NA_real_
   if (!"squared_up" %in% names(df)) df$squared_up <- NA_real_
+  if (!"zone" %in% names(df)) df$zone <- NA_integer_
 
   # Count plate appearances per batter (before filtering to BBE)
   pa_counts <- df %>%
@@ -336,6 +337,47 @@ aggregate_spring_training <- function(df, year, min_pa = MIN_PA, verbose = TRUE)
         grepl("hit_into_play", description, ignore.case = TRUE) ~ TRUE,
         TRUE ~ FALSE
       )
+    )
+
+  # Plate discipline metrics (from ALL pitches)
+  pitch_discipline <- df %>%
+    filter(!is.na(batter_id)) %>%
+    group_by(batter_id) %>%
+    summarise(
+      whiff_rate = {
+        swings <- sum(description %in% c("swinging_strike", "swinging_strike_blocked",
+                                          "foul", "foul_tip", "foul_bunt",
+                                          "hit_into_play", "hit_into_play_no_out",
+                                          "hit_into_play_score"), na.rm = TRUE)
+        whiffs <- sum(description %in% c("swinging_strike", "swinging_strike_blocked"), na.rm = TRUE)
+        if (swings > 0) whiffs / swings else NA_real_
+      },
+      chase_rate = {
+        outside <- zone %in% c(11, 12, 13, 14) | (is.na(zone) & !zone %in% 1:9)
+        outside_pitches <- sum(outside, na.rm = TRUE)
+        outside_swings <- sum(outside & description %in% c(
+          "swinging_strike", "swinging_strike_blocked",
+          "foul", "foul_tip", "hit_into_play",
+          "hit_into_play_no_out", "hit_into_play_score"
+        ), na.rm = TRUE)
+        if (outside_pitches > 0) outside_swings / outside_pitches else NA_real_
+      },
+      zone_contact_rate = {
+        in_zone <- zone %in% 1:9
+        zone_swings <- sum(in_zone & description %in% c(
+          "swinging_strike", "swinging_strike_blocked",
+          "foul", "foul_tip", "foul_bunt",
+          "hit_into_play", "hit_into_play_no_out",
+          "hit_into_play_score"
+        ), na.rm = TRUE)
+        zone_contact <- sum(in_zone & description %in% c(
+          "foul", "foul_tip", "foul_bunt",
+          "hit_into_play", "hit_into_play_no_out",
+          "hit_into_play_score"
+        ), na.rm = TRUE)
+        if (zone_swings > 0) zone_contact / zone_swings else NA_real_
+      },
+      .groups = "drop"
     )
 
   bbe_data <- df %>%
@@ -362,8 +404,14 @@ aggregate_spring_training <- function(df, year, min_pa = MIN_PA, verbose = TRUE)
       la_sd = sd(launch_angle, na.rm = TRUE),
       hard_hit_rate = mean(launch_speed >= 95, na.rm = TRUE),
       sweet_spot_rate = mean(launch_angle >= 8 & launch_angle <= 32, na.rm = TRUE),
+      flyball_rate = mean(launch_angle > 25, na.rm = TRUE),
       pull_rate = mean(
         (stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42),
+        na.rm = TRUE
+      ),
+      pull_fly_rate = mean(
+        launch_angle > 25 &
+        ((stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42)),
         na.rm = TRUE
       ),
       avg_bat_speed = mean(bat_speed, na.rm = TRUE),
@@ -377,8 +425,9 @@ aggregate_spring_training <- function(df, year, min_pa = MIN_PA, verbose = TRUE)
       year = year
     ) %>%
     rename(batter = batter_id) %>%
-    # Join PA counts and filter on PAs (not BBE)
+    # Join PA counts and plate discipline, then filter on PAs (not BBE)
     left_join(pa_counts, by = c("batter" = "batter_id")) %>%
+    left_join(pitch_discipline, by = c("batter" = "batter_id")) %>%
     filter(pa >= min_pa)
 
   if (verbose) {
@@ -406,7 +455,7 @@ resolve_batter_names <- function(df, cache_file = "cache/mlbam_batter_cache.csv"
     as.integer()
 
   if (length(ids) == 0) {
-    return(tibble(batter = integer(0), batter_name = character(0)))
+    return(tibble(batter = integer(0), batter_name = character(0), birth_date = as.Date(character(0))))
   }
 
   cache <- if (file.exists(cache_file)) {
@@ -416,14 +465,18 @@ resolve_batter_names <- function(df, cache_file = "cache/mlbam_batter_cache.csv"
   } else {
     tibble(batter = integer(0), batter_name = character(0))
   }
+  if (!"birth_date" %in% names(cache)) cache$birth_date <- as.Date(NA)
 
-  need_ids <- setdiff(ids, cache$batter)
+  need_ids <- unique(c(
+    setdiff(ids, cache$batter),
+    cache %>% filter(batter %in% ids, is.na(birth_date)) %>% pull(batter)
+  ))
 
   if (length(need_ids) > 0) {
     if (verbose) message("Resolving ", length(need_ids), " batter names...")
 
     batch_size <- 100
-    new_rows <- tibble(batter = integer(0), batter_name = character(0))
+    new_rows <- tibble(batter = integer(0), batter_name = character(0), birth_date = as.Date(character(0)))
 
     for (i in seq(1, length(need_ids), by = batch_size)) {
       slice <- need_ids[i:min(i + batch_size - 1, length(need_ids))]
@@ -440,7 +493,8 @@ resolve_batter_names <- function(df, cache_file = "cache/mlbam_batter_cache.csv"
           people <- tibble::as_tibble(dat$people) %>%
             transmute(
               batter = as.integer(id),
-              batter_name = fullName
+              batter_name = fullName,
+              birth_date = as.Date(birthDate, format = "%Y-%m-%d")
             )
           new_rows <- bind_rows(new_rows, people)
         }
@@ -448,6 +502,7 @@ resolve_batter_names <- function(df, cache_file = "cache/mlbam_batter_cache.csv"
       Sys.sleep(0.5)
     }
 
+    cache <- cache %>% filter(!batter %in% new_rows$batter)
     cache <- bind_rows(cache, new_rows) %>% distinct()
     if (!dir.exists(dirname(cache_file))) dir.create(dirname(cache_file), recursive = TRUE)
     readr::write_csv(cache, cache_file)
@@ -709,8 +764,10 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
     "avg_ev", "max_ev", "ev_90th",
     "avg_la", "la_sd",
     "hard_hit_rate", "sweet_spot_rate",
+    "flyball_rate", "pull_fly_rate",
     "pull_rate",
-    "avg_bat_speed", "avg_swing_length", "squared_up_rate"
+    "avg_bat_speed", "avg_swing_length", "squared_up_rate",
+    "whiff_rate", "chase_rate", "zone_contact_rate"
   )
 
   available_metrics <- delta_metrics[
@@ -767,34 +824,69 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
   # ========== SCORE & RANK ==========
   if (verbose) message("Computing breakout scores...")
 
+  # Helper: scale using fixed training parameters when available
+  fixed_scale <- function(x, param_name = NULL) {
+    params <- model_pkg$scaling_params
+    if (!is.null(params) && !is.null(param_name) && param_name %in% names(params)) {
+      p <- params[[param_name]]
+      return((x - p$mean) / p$sd)
+    }
+    safe_scale(x)
+  }
+
+  # Resolve names (with birth dates for age)
   name_map <- resolve_batter_names(combined, verbose = verbose)
 
+  # Compute age
+  age_data <- tibble(batter = integer(0), age = numeric(0))
+  if ("birth_date" %in% names(name_map)) {
+    season_midpoint <- as.Date(paste0(ST_YEAR, "-07-01"))
+    age_data <- name_map %>%
+      filter(!is.na(birth_date)) %>%
+      transmute(batter, age = as.numeric(difftime(season_midpoint, birth_date, units = "days")) / 365.25)
+  }
+  combined <- combined %>% left_join(age_data, by = "batter")
+
   results <- combined %>%
-    left_join(name_map, by = "batter") %>%
+    left_join(name_map %>% select(batter, batter_name), by = "batter") %>%
     mutate(
-      # Breakout score components (same weighting as main analysis)
-      hr_bbe_room = -safe_scale(hr_per_bbe_y1),
+      # Breakout score (matches revised formula from hr_bbe_analysis.R)
+      model_score = fixed_scale(predicted_delta_hr_bbe, "predicted_delta_hr_bbe"),
+      hr_bbe_room = -fixed_scale(hr_per_bbe_y1, "hr_per_bbe_y2"),
       la_improvement = case_when(
         is.na(avg_la_y1) | is.na(delta_avg_la) ~ 0,
-        avg_la_y1 < 20 & delta_avg_la > 0 ~ delta_avg_la / 5,
-        avg_la_y1 > 35 & delta_avg_la < 0 ~ -delta_avg_la / 5,
+        avg_la_y1 < 20 & delta_avg_la > 0 ~ pmin(delta_avg_la / 5, 1.5),
+        avg_la_y1 > 35 & delta_avg_la < 0 ~ pmin(-delta_avg_la / 5, 1.5),
         avg_la_y1 >= 20 & avg_la_y1 <= 35 ~ 0.5,
         TRUE ~ 0
       ),
-      hh_improvement = safe_scale(delta_hard_hit_rate),
-      ev90_improvement = safe_scale(delta_ev_90th),
-      swing_improvement = if_else(
-        !is.na(delta_avg_swing_length) & !is.na(delta_avg_bat_speed),
-        (safe_scale(delta_avg_swing_length) + safe_scale(delta_avg_bat_speed)) / 2,
-        0
-      ),
+      discipline_improvement = {
+        disc <- rep(0, n())
+        if (all(c("delta_whiff_rate", "delta_chase_rate") %in% names(cur_data()))) {
+          whiff_comp <- -fixed_scale(delta_whiff_rate, "delta_whiff_rate")
+          chase_comp <- -fixed_scale(delta_chase_rate, "delta_chase_rate")
+          disc <- (coalesce(whiff_comp, 0) + coalesce(chase_comp, 0)) / 2
+        }
+        disc
+      },
+      flyball_improvement = if ("delta_flyball_rate" %in% names(cur_data()))
+        fixed_scale(delta_flyball_rate, "delta_flyball_rate") else 0,
+      age_factor = if ("age" %in% names(cur_data())) {
+        case_when(
+          is.na(age) ~ 0,
+          age <= 25 ~ 0.5,
+          age <= 28 ~ 0.2,
+          age <= 32 ~ 0,
+          TRUE ~ -0.3
+        )
+      } else 0,
       breakout_score = (
-        0.20 * hr_bbe_room +
-        0.15 * la_improvement +
-        0.12 * coalesce(hh_improvement, 0) +
-        0.12 * coalesce(ev90_improvement, 0) +
-        0.10 * swing_improvement +
-        0.31 * safe_scale(predicted_delta_hr_bbe)
+        0.45 * coalesce(model_score, 0) +
+        0.15 * hr_bbe_room +
+        0.12 * la_improvement +
+        0.12 * coalesce(discipline_improvement, 0) +
+        0.08 * coalesce(flyball_improvement, 0) +
+        0.08 * age_factor
       ),
       # Confidence based on spring training PAs
       confidence = case_when(
@@ -814,12 +906,16 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
       batter, batter_name, stand,
       hr_per_bbe_y1, hr_per_bbe_y2, delta_hr_per_bbe,
       predicted_delta_hr_bbe, breakout_score, hr_gain_flag, confidence,
+      any_of("age"),
       any_of(c(
         "avg_la_y1", "delta_avg_la",
         "hard_hit_rate_y1", "delta_hard_hit_rate",
         "ev_90th_y1", "delta_ev_90th",
         "avg_bat_speed_y1", "delta_avg_bat_speed",
-        "avg_swing_length_y1", "delta_avg_swing_length"
+        "avg_swing_length_y1", "delta_avg_swing_length",
+        "flyball_rate_y1", "delta_flyball_rate",
+        "whiff_rate_y1", "delta_whiff_rate",
+        "chase_rate_y1", "delta_chase_rate"
       )),
       bbe_y1, bbe_y2, pa_y2
     ) %>%
