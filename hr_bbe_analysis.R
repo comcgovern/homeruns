@@ -322,9 +322,9 @@ is_batted_ball <- function(df) {
 # ============================================================================
 
 aggregate_batter_season <- function(df, year, verbose = TRUE) {
-  
+
   if (verbose) message("Aggregating batter stats for ", year, "...")
-  
+
   # Debug: show available columns
   if (verbose) {
     batter_cols <- grep("batter|player", names(df), value = TRUE, ignore.case = TRUE)
@@ -332,10 +332,10 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
     game_cols <- grep("game|pk|ab|at_bat", names(df), value = TRUE, ignore.case = TRUE)
     message("  Available game-related columns: ", paste(game_cols, collapse = ", "))
   }
-  
+
   # Coalesce batter ID from various possible column names
   df$batter_id <- coalesce_batter_id(df)
-  
+
   # Coalesce game identifier
   game_id_cols <- c("game_pk", "game_id", "gamePk", "gameId", "game")
   for (nm in game_id_cols) {
@@ -345,7 +345,7 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
     }
   }
   if (!"game_pk" %in% names(df)) df$game_pk <- 1  # Fallback
-  
+
   # Coalesce at-bat identifier
   ab_cols <- c("at_bat_number", "atBatNumber", "ab_number", "at_bat")
   for (nm in ab_cols) {
@@ -355,25 +355,26 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
     }
   }
   if (!"at_bat_number" %in% names(df)) df$at_bat_number <- seq_len(nrow(df))  # Fallback
-  
+
   if (verbose) {
     message("  Unique batters found: ", length(unique(df$batter_id[!is.na(df$batter_id)])))
   }
-  
+
   # Filter to batted ball events only for BBE-specific metrics
   df <- df %>% is_batted_ball()
-  
+
   # Ensure required columns exist
   if (!"events" %in% names(df)) df$events <- NA_character_
   if (!"launch_speed" %in% names(df)) df$launch_speed <- NA_real_
- if (!"launch_angle" %in% names(df)) df$launch_angle <- NA_real_
+  if (!"launch_angle" %in% names(df)) df$launch_angle <- NA_real_
   if (!"barrel" %in% names(df)) df$barrel <- NA_integer_
   if (!"hc_x" %in% names(df)) df$hc_x <- NA_real_
   if (!"stand" %in% names(df)) df$stand <- NA_character_
   if (!"bat_speed" %in% names(df)) df$bat_speed <- NA_real_
   if (!"swing_length" %in% names(df)) df$swing_length <- NA_real_
   if (!"squared_up" %in% names(df)) df$squared_up <- NA_real_
-  
+  if (!"zone" %in% names(df)) df$zone <- NA_integer_
+
   # All plate appearances for context
   pa_counts <- df %>%
     filter(!is.na(batter_id)) %>%
@@ -382,18 +383,63 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
       pa = n_distinct(game_pk, at_bat_number),
       .groups = "drop"
     )
-  
+
+  # Plate discipline metrics (computed from ALL pitches, not just BBE)
+  # zone: 1-9 = in strike zone, 11-14 = out of zone (Statcast convention)
+  pitch_discipline <- df %>%
+    filter(!is.na(batter_id)) %>%
+    group_by(batter_id) %>%
+    summarise(
+      # Whiff rate: swinging strikes / total swings
+      whiff_rate = {
+        swings <- sum(description %in% c("swinging_strike", "swinging_strike_blocked",
+                                          "foul", "foul_tip", "foul_bunt",
+                                          "hit_into_play", "hit_into_play_no_out",
+                                          "hit_into_play_score"), na.rm = TRUE)
+        whiffs <- sum(description %in% c("swinging_strike", "swinging_strike_blocked"), na.rm = TRUE)
+        if (swings > 0) whiffs / swings else NA_real_
+      },
+      # Chase rate: swings at pitches outside the zone / pitches outside zone
+      chase_rate = {
+        outside <- zone %in% c(11, 12, 13, 14) | (is.na(zone) & !zone %in% 1:9)
+        outside_pitches <- sum(outside, na.rm = TRUE)
+        outside_swings <- sum(outside & description %in% c(
+          "swinging_strike", "swinging_strike_blocked",
+          "foul", "foul_tip", "hit_into_play",
+          "hit_into_play_no_out", "hit_into_play_score"
+        ), na.rm = TRUE)
+        if (outside_pitches > 0) outside_swings / outside_pitches else NA_real_
+      },
+      # Zone contact rate: contact on pitches in the zone / swings in the zone
+      zone_contact_rate = {
+        in_zone <- zone %in% 1:9
+        zone_swings <- sum(in_zone & description %in% c(
+          "swinging_strike", "swinging_strike_blocked",
+          "foul", "foul_tip", "foul_bunt",
+          "hit_into_play", "hit_into_play_no_out",
+          "hit_into_play_score"
+        ), na.rm = TRUE)
+        zone_contact <- sum(in_zone & description %in% c(
+          "foul", "foul_tip", "foul_bunt",
+          "hit_into_play", "hit_into_play_no_out",
+          "hit_into_play_score"
+        ), na.rm = TRUE)
+        if (zone_swings > 0) zone_contact / zone_swings else NA_real_
+      },
+      .groups = "drop"
+    )
+
   # Batted ball events only
   bbe_data <- df %>%
     filter(is_bbe, !is.na(batter_id))
-  
+
   if (nrow(bbe_data) == 0) {
     warning("No batted ball events found for ", year)
     return(tibble())
   }
-  
+
   if (verbose) message("  Batted ball events: ", nrow(bbe_data))
-  
+
   # Core batted ball metrics
   batter_stats <- bbe_data %>%
     group_by(batter_id) %>%
@@ -401,43 +447,53 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
       # Outcomes
       bbe = n(),
       hr = sum(events == "home_run", na.rm = TRUE),
-      
+
       # Exit velocity
       avg_ev = mean(launch_speed, na.rm = TRUE),
       max_ev = safe_max(launch_speed),
-      ev_90th = if (sum(!is.na(launch_speed)) > 0) 
+      ev_90th = if (sum(!is.na(launch_speed)) > 0)
                   quantile(launch_speed, 0.9, na.rm = TRUE) else NA_real_,
-      
+
       # Launch angle
       avg_la = mean(launch_angle, na.rm = TRUE),
       la_sd = sd(launch_angle, na.rm = TRUE),
-      
+
       # Quality of contact rates
       hard_hit_rate = mean(launch_speed >= 95, na.rm = TRUE),
       barrel_rate = mean(barrel == 1, na.rm = TRUE),
       sweet_spot_rate = mean(launch_angle >= 8 & launch_angle <= 32, na.rm = TRUE),
-      
+
       # Optimal HR zone (25-35 degrees, 95+ mph)
       optimal_hr_rate = mean(
-        launch_angle >= 25 & launch_angle <= 35 & launch_speed >= 95, 
+        launch_angle >= 25 & launch_angle <= 35 & launch_speed >= 95,
         na.rm = TRUE
       ),
-      
+
+      # Flyball rate: launch angle > 25 degrees (fly balls and popups)
+      flyball_rate = mean(launch_angle > 25, na.rm = TRUE),
+
       # Spray angle (pull tendency)
       avg_spray_angle = mean(hc_x - 125.42, na.rm = TRUE),
       pull_rate = mean(
         (stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42),
         na.rm = TRUE
       ),
-      
+
+      # Pull flyball rate: flyballs hit to pull side (HR sweet spot)
+      pull_fly_rate = mean(
+        launch_angle > 25 &
+        ((stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42)),
+        na.rm = TRUE
+      ),
+
       # Bat tracking metrics (2024+ only)
       avg_bat_speed = mean(bat_speed, na.rm = TRUE),
       avg_swing_length = mean(swing_length, na.rm = TRUE),
       squared_up_rate = mean(squared_up, na.rm = TRUE),
-      
+
       # Handedness (for context)
       stand = first(stand),
-      
+
       .groups = "drop"
     ) %>%
     # Calculate HR/BBE
@@ -447,13 +503,15 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
     ) %>%
     # Join PA counts
     left_join(pa_counts, by = "batter_id") %>%
+    # Join plate discipline metrics
+    left_join(pitch_discipline, by = "batter_id") %>%
     # Rename for consistency downstream
     rename(batter = batter_id) %>%
     # Filter to minimum BBE
     filter(bbe >= MIN_BBE_PER_YEAR)
-  
+
   if (verbose) message("  ", nrow(batter_stats), " batters with ", MIN_BBE_PER_YEAR, "+ BBE")
-  
+
   batter_stats
 }
 
@@ -462,21 +520,21 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
 # ============================================================================
 
 resolve_batter_names <- function(df, cache_file = "cache/mlbam_batter_cache.csv", verbose = TRUE) {
-  
+
   if (!requireNamespace("jsonlite", quietly = TRUE)) stop("Please install 'jsonlite'.")
   if (!requireNamespace("httr", quietly = TRUE)) stop("Please install 'httr'.")
-  
+
   ids <- df %>%
     filter(!is.na(batter)) %>%
     distinct(batter) %>%
     pull(batter) %>%
     as.integer()
-  
+
   if (length(ids) == 0) {
-    return(tibble(batter = integer(0), batter_name = character(0)))
+    return(tibble(batter = integer(0), batter_name = character(0), birth_date = as.Date(character(0))))
   }
-  
-  # Load cache
+
+  # Load cache (migrate old caches without birth_date column)
   cache <- if (file.exists(cache_file)) {
     suppressWarnings(readr::read_csv(cache_file, show_col_types = FALSE)) %>%
       mutate(batter = as.integer(batter)) %>%
@@ -484,50 +542,57 @@ resolve_batter_names <- function(df, cache_file = "cache/mlbam_batter_cache.csv"
   } else {
     tibble(batter = integer(0), batter_name = character(0))
   }
-  
-  need_ids <- setdiff(ids, cache$batter)
-  
+  if (!"birth_date" %in% names(cache)) cache$birth_date <- as.Date(NA)
+
+  # Fetch players missing from cache OR missing birth_date
+  need_ids <- unique(c(
+    setdiff(ids, cache$batter),
+    cache %>% filter(batter %in% ids, is.na(birth_date)) %>% pull(batter)
+  ))
+
   if (length(need_ids) > 0) {
     if (verbose) message("Resolving ", length(need_ids), " batter names via StatsAPI...")
-    
+
     # Batch fetch
     batch_size <- 100
-    new_rows <- tibble(batter = integer(0), batter_name = character(0))
-    
+    new_rows <- tibble(batter = integer(0), batter_name = character(0), birth_date = as.Date(character(0)))
+
     for (i in seq(1, length(need_ids), by = batch_size)) {
       slice <- need_ids[i:min(i + batch_size - 1, length(need_ids))]
       q <- paste(slice, collapse = ",")
       url <- paste0("https://statsapi.mlb.com/api/v1/people?personIds=", q)
-      
+
       resp <- try(httr::GET(url, httr::timeout(30)), silent = TRUE)
-      
+
       if (!inherits(resp, "try-error") && !httr::http_error(resp)) {
         txt <- httr::content(resp, as = "text", encoding = "UTF-8")
         dat <- jsonlite::fromJSON(txt, simplifyDataFrame = TRUE)
-        
+
         if (!is.null(dat$people) && nrow(dat$people) > 0) {
           people <- tibble::as_tibble(dat$people) %>%
             transmute(
               batter = as.integer(id),
-              batter_name = fullName
+              batter_name = fullName,
+              birth_date = as.Date(birthDate, format = "%Y-%m-%d")
             )
           new_rows <- bind_rows(new_rows, people)
         }
       }
-      
+
       Sys.sleep(0.5)  # Rate limiting
     }
-    
-    # Update cache
+
+    # Update cache: remove stale entries for re-fetched IDs, then add new data
+    cache <- cache %>% filter(!batter %in% new_rows$batter)
     cache <- bind_rows(cache, new_rows) %>% distinct()
     readr::write_csv(cache, cache_file)
   }
-  
+
   cache %>%
     filter(batter %in% ids) %>%
     mutate(batter_name = if_else(
-      is.na(batter_name), 
-      paste0("Batter_", batter), 
+      is.na(batter_name),
+      paste0("Batter_", batter),
       batter_name
     ))
 }
@@ -545,8 +610,10 @@ compute_deltas <- function(year1_data, year2_data, verbose = TRUE) {
     "avg_ev", "max_ev", "ev_90th",
     "avg_la", "la_sd",
     "hard_hit_rate", "barrel_rate", "sweet_spot_rate", "optimal_hr_rate",
+    "flyball_rate", "pull_fly_rate",
     "pull_rate",
-    "avg_bat_speed", "avg_swing_length", "squared_up_rate"
+    "avg_bat_speed", "avg_swing_length", "squared_up_rate",
+    "whiff_rate", "chase_rate", "zone_contact_rate"
   )
   
   # Only include metrics that exist in both datasets
@@ -604,9 +671,9 @@ compute_deltas <- function(year1_data, year2_data, verbose = TRUE) {
 # ============================================================================
 
 fit_gbm_model <- function(delta_data, verbose = TRUE) {
-  
-  if (verbose) message("\n🔧 Fitting GBM model for HR/BBE change...")
-  
+
+  if (verbose) message("\n Fitting GBM model for HR/BBE change...")
+
   # Predictor columns (the deltas)
   # NOTE: Excluding barrel_rate and optimal_hr_rate - these are too close to the outcome
   # (they essentially measure "did you hit more HR-type batted balls")
@@ -615,23 +682,31 @@ fit_gbm_model <- function(delta_data, verbose = TRUE) {
     "delta_avg_la", "delta_la_sd",
     "delta_hard_hit_rate",  # Keep this - it's EV-based only, not outcome-based
     "delta_sweet_spot_rate",  # LA-based only
+    "delta_flyball_rate",
     "delta_pull_rate",
-    "delta_avg_bat_speed", "delta_avg_swing_length", "delta_squared_up_rate"
+    "delta_pull_fly_rate",
+    "delta_avg_bat_speed", "delta_avg_swing_length", "delta_squared_up_rate",
+    "delta_whiff_rate", "delta_chase_rate", "delta_zone_contact_rate"
   )
-  
+
   # Also include Year 1 levels as predictors (room to grow)
   # Excluding barrel_rate_y1 for same reason
   level_cols <- c(
-    "avg_ev_y1", "avg_la_y1", 
+    "avg_ev_y1", "avg_la_y1",
     "hard_hit_rate_y1",
-    "pull_rate_y1", "hr_per_bbe_y1"
+    "pull_rate_y1", "hr_per_bbe_y1",
+    "flyball_rate_y1",
+    "whiff_rate_y1", "chase_rate_y1"
   )
-  
-  all_predictors <- c(predictor_cols, level_cols)
-  
+
+  # Age as a predictor (if available)
+  age_col <- if ("age" %in% names(delta_data)) "age" else NULL
+
+  all_predictors <- c(predictor_cols, level_cols, age_col)
+
   # Filter to columns that actually exist in the data
   available_predictors <- all_predictors[all_predictors %in% names(delta_data)]
-  
+
   # Check which predictors have sufficient non-NA data (at least 50% non-NA)
   usable_predictors <- c()
   for (pred in available_predictors) {
@@ -642,61 +717,112 @@ fit_gbm_model <- function(delta_data, verbose = TRUE) {
       message("  Dropping ", pred, " (", round(pct_valid * 100, 1), "% valid)")
     }
   }
-  
+
   if (length(usable_predictors) == 0) {
     stop("No predictors have sufficient non-NA data")
   }
-  
+
   if (verbose) {
     message("  Usable predictors (>=50% non-NA): ", length(usable_predictors))
   }
-  
+
   # Select columns and remove rows with NA in usable predictors
   model_data <- delta_data %>%
     select(delta_hr_per_bbe, all_of(usable_predictors)) %>%
     drop_na()
-  
+
   if (verbose) message("  Using ", nrow(model_data), " complete cases")
   if (verbose) message("  Predictors: ", paste(usable_predictors, collapse = ", "))
-  
+
   if (nrow(model_data) < 30) {
     stop("Insufficient data for modeling (", nrow(model_data), " rows). Need at least 30.")
   }
-  
-  # Fit GBM with adjusted parameters for smaller datasets
+
+  # Fit GBM with conservative parameters for small datasets
+  # interaction.depth = 2 (reduced from 3) to limit overfitting with N < 300
   set.seed(42)
-  
+
   # Adjust cv.folds based on sample size
   n_folds <- min(5, floor(nrow(model_data) / 10))
   n_folds <- max(n_folds, 2)  # At least 2-fold CV
-  
+
   gbm_fit <- gbm(
     formula = delta_hr_per_bbe ~ .,
     data = model_data,
     distribution = "gaussian",
-    n.trees = 500,
-    interaction.depth = 3,
-    shrinkage = 0.01,
-    n.minobsinnode = max(3, floor(nrow(model_data) / 50)),  # Adaptive
-    bag.fraction = 0.5,
+    n.trees = 1000,
+    interaction.depth = 2,
+    shrinkage = 0.005,
+    n.minobsinnode = max(5, floor(nrow(model_data) / 30)),
+    bag.fraction = 0.6,
     cv.folds = n_folds,
     verbose = FALSE
   )
-  
+
   # Optimal number of trees
   best_trees <- gbm.perf(gbm_fit, method = "cv", plot.it = FALSE)
-  
+
+  # Model diagnostics
+  cv_error <- gbm_fit$cv.error[best_trees]
+  train_error <- gbm_fit$train.error[best_trees]
+  y <- model_data$delta_hr_per_bbe
+  tss <- sum((y - mean(y))^2)
+  cv_r_squared <- 1 - (cv_error * nrow(model_data)) / tss
+  train_r_squared <- 1 - (train_error * nrow(model_data)) / tss
+
+  # OOB predictions for calibration check
+  oob_preds <- predict(gbm_fit, n.trees = best_trees)
+  oob_rmse <- sqrt(mean((y - oob_preds)^2))
+  oob_cor <- cor(y, oob_preds, use = "complete.obs")
+
   if (verbose) {
-    message("  ✅ GBM fitted")
+    message("  GBM fitted successfully")
     message("  Optimal trees (CV): ", best_trees)
     message("  CV folds used: ", n_folds)
+    message("  --- Model Diagnostics ---")
+    message("  Train R-squared:   ", round(train_r_squared, 4))
+    message("  CV R-squared:      ", round(cv_r_squared, 4))
+    message("  Train RMSE:        ", round(sqrt(train_error), 5))
+    message("  CV RMSE:           ", round(sqrt(cv_error), 5))
+    message("  Prediction cor:    ", round(oob_cor, 4))
+    if (cv_r_squared < 0.05) {
+      message("  WARNING: CV R-squared is very low. Model may have limited predictive power.")
+    }
   }
-  
+
+  # Compute scaling parameters from training data for consistent scoring later
+  # These fixed parameters prevent score drift when applied to different cohorts
+  scaling_params <- list()
+  scale_cols <- c("predicted_delta_hr_bbe", "hr_per_bbe_y2",
+                  "delta_hard_hit_rate", "delta_ev_90th",
+                  "delta_avg_swing_length", "delta_avg_bat_speed",
+                  "delta_flyball_rate", "delta_whiff_rate", "delta_chase_rate")
+  for (col in scale_cols) {
+    if (col %in% names(delta_data)) {
+      vals <- delta_data[[col]][!is.na(delta_data[[col]])]
+      if (length(vals) >= 2 && sd(vals) > 0) {
+        scaling_params[[col]] <- list(mean = mean(vals), sd = sd(vals))
+      }
+    }
+  }
+
   list(
     model = gbm_fit,
     best_trees = best_trees,
     predictors = usable_predictors,
-    model_data = model_data
+    model_data = model_data,
+    diagnostics = list(
+      cv_r_squared = cv_r_squared,
+      train_r_squared = train_r_squared,
+      cv_rmse = sqrt(cv_error),
+      train_rmse = sqrt(train_error),
+      prediction_cor = oob_cor,
+      n_obs = nrow(model_data),
+      n_predictors = length(usable_predictors),
+      n_folds = n_folds,
+      best_trees = best_trees
+    ),
+    scaling_params = scaling_params
   )
 }
 
@@ -727,14 +853,14 @@ get_variable_importance <- function(gbm_result, verbose = TRUE) {
 # IDENTIFY BREAKOUT CANDIDATES
 # ============================================================================
 
-identify_breakout_candidates <- function(delta_data, gbm_result, year2_data, 
+identify_breakout_candidates <- function(delta_data, gbm_result, year2_data,
                                           name_map, verbose = TRUE) {
-  
-  if (verbose) message("\n🎯 Identifying potential breakout candidates...")
-  
+
+  if (verbose) message("\n Identifying potential breakout candidates...")
+
   # Get predictions for each player
   predict_data <- delta_data %>% select(any_of(gbm_result$predictors))
-  
+
   # Handle case where some predictors might be missing
   missing_preds <- setdiff(gbm_result$predictors, names(predict_data))
   if (length(missing_preds) > 0) {
@@ -742,68 +868,109 @@ identify_breakout_candidates <- function(delta_data, gbm_result, year2_data,
       predict_data[[mp]] <- 0  # Neutral value for missing predictors
     }
   }
-  
+
   predictions <- predict(
-    gbm_result$model, 
+    gbm_result$model,
     newdata = predict_data,
     n.trees = gbm_result$best_trees
   )
-  
+
   delta_data$predicted_delta_hr_bbe <- predictions
-  
+
+  # Helper: scale using fixed training parameters when available, else cohort z-score
+  fixed_scale <- function(x, param_name = NULL) {
+    params <- gbm_result$scaling_params
+    if (!is.null(param_name) && param_name %in% names(params)) {
+      p <- params[[param_name]]
+      return((x - p$mean) / p$sd)
+    }
+    safe_scale(x)
+  }
+
   # Calculate a "breakout score" based on key indicators
   # Higher = more likely to improve HR/BBE
+  #
+  # Design: The GBM prediction is the primary signal (it already captures the
+  # delta features). The supplementary components capture factors NOT in the
+  # model: room-to-grow ceiling, LA directionality, and plate discipline changes.
+  # This avoids double-counting delta_hard_hit_rate, delta_ev_90th, etc. which
+  # the GBM already uses as inputs.
   candidates <- delta_data %>%
     left_join(name_map, by = "batter") %>%
     mutate(
       # Residual: actual - predicted (negative = underperformed model expectation)
       residual = delta_hr_per_bbe - predicted_delta_hr_bbe,
-      
+
       # "Unrealized potential": positive model prediction but small/negative actual change
       unrealized = predicted_delta_hr_bbe - delta_hr_per_bbe,
-      
+
       # === BREAKOUT SCORE COMPONENTS ===
-      # 1. Low HR/BBE in Y2 = room to grow (standardized)
-      hr_bbe_room = -safe_scale(hr_per_bbe_y2),
-      
-      # 2. Positive LA change toward optimal range
-      # If LA was below 20, positive delta is good
-      # If LA was above 35, negative delta is good
+      # 1. GBM prediction (primary data-driven signal — captures EV, LA, bat
+      #    tracking deltas plus baseline levels, so we don't repeat those here)
+      model_score = fixed_scale(predicted_delta_hr_bbe, "predicted_delta_hr_bbe"),
+
+      # 2. Room to grow: low HR/BBE in baseline = higher ceiling
+      hr_bbe_room = -fixed_scale(hr_per_bbe_y2, "hr_per_bbe_y2"),
+
+      # 3. LA direction adjustment (not a GBM input — this captures *where*
+      #    a player's LA sits relative to the optimal HR band, which is
+      #    nonlinear and directional in a way the GBM delta can miss)
       la_improvement = case_when(
         is.na(avg_la_y1) | is.na(delta_avg_la) ~ 0,
-        avg_la_y1 < 20 & delta_avg_la > 0 ~ delta_avg_la / 5,  # Reward raising low LA
-        avg_la_y1 > 35 & delta_avg_la < 0 ~ -delta_avg_la / 5, # Reward lowering high LA
+        avg_la_y1 < 20 & delta_avg_la > 0 ~ pmin(delta_avg_la / 5, 1.5),
+        avg_la_y1 > 35 & delta_avg_la < 0 ~ pmin(-delta_avg_la / 5, 1.5),
         avg_la_y1 >= 20 & avg_la_y1 <= 35 ~ 0.5,  # Already optimal
         TRUE ~ 0
       ),
-      
-      # 3. Hard hit rate improvement
-      hh_improvement = safe_scale(delta_hard_hit_rate),
-      
-      # 4. Top-end EV improvement
-      ev90_improvement = safe_scale(delta_ev_90th),
-      
-      # 5. Bat tracking improvements (if available)
-      swing_improvement = if_else(
-        !is.na(delta_avg_swing_length) & !is.na(delta_avg_bat_speed),
-        (safe_scale(delta_avg_swing_length) + safe_scale(delta_avg_bat_speed)) / 2,
+
+      # 4. Plate discipline improvement (whiff rate DOWN and chase rate DOWN
+      #    are positive signals not in the original model)
+      discipline_improvement = {
+        disc <- rep(0, n())
+        if (all(c("delta_whiff_rate", "delta_chase_rate") %in% names(cur_data()))) {
+          whiff_comp <- -fixed_scale(delta_whiff_rate, "delta_whiff_rate")
+          chase_comp <- -fixed_scale(delta_chase_rate, "delta_chase_rate")
+          disc <- (coalesce(whiff_comp, 0) + coalesce(chase_comp, 0)) / 2
+        }
+        disc
+      },
+
+      # 5. Flyball rate improvement (pulling more flyballs = HR upside)
+      flyball_improvement = if ("delta_flyball_rate" %in% names(cur_data()))
+        fixed_scale(delta_flyball_rate, "delta_flyball_rate") else 0,
+
+      # 6. Age factor: younger players get a small boost (more room for
+      #    genuine mechanical improvement)
+      age_factor = if ("age" %in% names(cur_data())) {
+        case_when(
+          is.na(age) ~ 0,
+          age <= 25 ~ 0.5,
+          age <= 28 ~ 0.2,
+          age <= 32 ~ 0,
+          TRUE ~ -0.3
+        )
+      } else {
         0
-      ),
-      
-      # Combined breakout score (weighted by variable importance)
+      },
+
+      # Combined breakout score
+      # Model prediction gets dominant weight since it's the only
+      # empirically-fitted component. Supplementary factors add context
+      # the model can't capture (ceiling, directionality, discipline, age).
       breakout_score = (
-        0.20 * hr_bbe_room +
-        0.15 * la_improvement +
-        0.12 * coalesce(hh_improvement, 0) +
-        0.12 * coalesce(ev90_improvement, 0) +
-        0.10 * swing_improvement +
-        0.31 * safe_scale(predicted_delta_hr_bbe)  # Model's prediction
+        0.45 * coalesce(model_score, 0) +
+        0.15 * hr_bbe_room +
+        0.12 * la_improvement +
+        0.12 * coalesce(discipline_improvement, 0) +
+        0.08 * coalesce(flyball_improvement, 0) +
+        0.08 * age_factor
       )
     ) %>%
     select(
       batter, batter_name, stand,
       hr_per_bbe_y1, hr_per_bbe_y2, delta_hr_per_bbe,
       predicted_delta_hr_bbe, breakout_score,
+      any_of("age"),
       # Key metrics for interpretation (use any_of for flexibility)
       any_of(c(
         "avg_la_y1", "delta_avg_la",
@@ -812,7 +979,10 @@ identify_breakout_candidates <- function(delta_data, gbm_result, year2_data,
         "avg_bat_speed_y1", "delta_avg_bat_speed",
         "avg_swing_length_y1", "delta_avg_swing_length",
         "avg_ev_y1", "delta_avg_ev",
-        "pull_rate_y1", "delta_pull_rate"
+        "pull_rate_y1", "delta_pull_rate",
+        "flyball_rate_y1", "delta_flyball_rate",
+        "whiff_rate_y1", "delta_whiff_rate",
+        "chase_rate_y1", "delta_chase_rate"
       )),
       bbe_y1, bbe_y2
     ) %>%
@@ -956,9 +1126,22 @@ run_hr_analysis <- function(verbose = TRUE) {
   # Compute deltas
   delta_data <- compute_deltas(batter_y1, batter_y2, verbose = verbose)
   
-  # Resolve names
+  # Resolve names (also fetches birth dates for age)
   name_map <- resolve_batter_names(delta_data, verbose = verbose)
-  
+
+  # Compute player age as of the baseline season's midpoint
+  if ("birth_date" %in% names(name_map)) {
+    season_midpoint <- as.Date(paste0(YEAR_2, "-07-01"))
+    age_data <- name_map %>%
+      filter(!is.na(birth_date)) %>%
+      transmute(
+        batter,
+        age = as.numeric(difftime(season_midpoint, birth_date, units = "days")) / 365.25
+      )
+    delta_data <- delta_data %>% left_join(age_data, by = "batter")
+    if (verbose) message("  Added age for ", sum(!is.na(delta_data$age)), "/", nrow(delta_data), " players")
+  }
+
   # Fit GBM
   gbm_result <- fit_gbm_model(delta_data, verbose = verbose)
   
@@ -984,7 +1167,9 @@ run_hr_analysis <- function(verbose = TRUE) {
     predictors = gbm_result$predictors,
     baseline_year = YEAR_2,
     baseline_data = batter_y2,  # This becomes the "Year 1" for next season
-    training_importance = importance
+    training_importance = importance,
+    scaling_params = gbm_result$scaling_params,
+    diagnostics = gbm_result$diagnostics
   )
   saveRDS(model_package, file.path(OUT_DIR, "hr_breakout_model.rds"))
   message("✅ Saved model package for early-season scoring: ", file.path(OUT_DIR, "hr_breakout_model.rds"))
