@@ -745,7 +745,8 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
   raw_st <- load_spring_training_data(st_start, as.character(st_end), verbose = verbose)
 
   if (nrow(raw_st) == 0) {
-    stop("No spring training data found. Spring training may not have started yet.")
+    message("No spring training data found. Spring training may not have started yet.")
+    return(invisible(NULL))
   }
 
   if (verbose) message("  Total spring training pitches: ", nrow(raw_st))
@@ -754,7 +755,8 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
   st_data <- aggregate_spring_training(raw_st, ST_YEAR, min_pa = min_pa, verbose = verbose)
 
   if (nrow(st_data) == 0) {
-    stop("No players have ", min_pa, "+ PA in spring training yet.")
+    message("No players have ", min_pa, "+ PA in spring training yet.")
+    return(invisible(NULL))
   }
 
   # ========== COMPUTE DELTAS VS LAST SEASON ==========
@@ -788,7 +790,8 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
   if (verbose) message("  ", nrow(combined), " players with both spring training and ", baseline_year, " data")
 
   if (nrow(combined) == 0) {
-    stop("No overlapping players between spring training and baseline season.")
+    message("No overlapping players between spring training and baseline season.")
+    return(invisible(NULL))
   }
 
   # Compute deltas
