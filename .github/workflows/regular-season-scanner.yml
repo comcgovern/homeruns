@@ -50,8 +50,9 @@ jobs:
           install.packages(c(
             "dplyr", "tidyr", "purrr", "stringr", "lubridate",
             "readr", "tibble", "gbm", "httr", "jsonlite",
-            "sabRmetrics"
+            "remotes"
           ), repos = "https://cloud.r-project.org")
+          remotes::install_github("saberpowers/sabRmetrics")
         shell: Rscript {0}
 
       - name: Create output directories
