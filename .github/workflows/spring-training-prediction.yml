@@ -46,6 +46,8 @@ jobs:
             r-packages-${{ runner.os }}-
 
       - name: Install R packages
+        env:
+          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           install.packages(c(
             "dplyr", "tidyr", "purrr", "stringr", "lubridate",
