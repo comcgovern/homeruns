@@ -107,14 +107,14 @@ SEED           <- 2024   # Base seed for reproducibility
 # BBE thresholds
 MIN_BBE_TRAIN  <- 150    # Minimum BBE to include a player in GBM training
 MIN_BBE_Y1     <- 150    # Baseline year minimum BBE (must be reliable)
-MIN_BBE_Y2     <- 30     # Lowest Y2 BBE to include in evaluation dataset
+MIN_BBE_Y2     <- 1      # Lowest Y2 BBE to include in evaluation dataset
 
 # Subsampling levels (BBE)
-BBE_SUBSAMPLE_LEVELS <- seq(30, 350, by = 10)
+BBE_SUBSAMPLE_LEVELS <- c(1, seq(5, 350, by = 5))
 
 # Threshold levels (for filtering analysis)
-BBE_THRESHOLD_LEVELS <- seq(150, 400, by = 10)
-PA_THRESHOLD_LEVELS  <- seq(200, 700, by = 25)
+BBE_THRESHOLD_LEVELS <- seq(0, 400, by = 10)
+PA_THRESHOLD_LEVELS  <- seq(0, 700, by = 25)
 
 # Override N_ITERATIONS from command line
 args <- commandArgs(trailingOnly = TRUE)
@@ -776,7 +776,7 @@ run_cv_analysis <- function(verbose = TRUE) {
   cat("  ", strrep("-", 60), "\n")
 
   key_levels <- subsample_summary %>%
-    filter(bbe_level %in% c(30, 50, 75, 100, 125, 150, 175, 200, 250, 300, 350))
+    filter(bbe_level %in% c(1, 5, 10, 20, 30, 50, 75, 100, 125, 150, 200, 250, 300, 350))
   for (i in 1:nrow(key_levels)) {
     row <- key_levels[i, ]
     cat(sprintf("  %-10d  %5.3f +/- %5.3f  %5.3f +/- %5.3f  %.0f\n",
@@ -795,7 +795,7 @@ run_cv_analysis <- function(verbose = TRUE) {
   cat("  ", strrep("-", 60), "\n")
 
   key_thresholds <- threshold_bbe_summary %>%
-    filter(threshold %in% seq(150, 400, by = 25))
+    filter(threshold %in% seq(0, 400, by = 25))
   for (i in 1:nrow(key_thresholds)) {
     row <- key_thresholds[i, ]
     cat(sprintf("  %-10d  %5.3f +/- %5.3f  %5.3f +/- %5.3f  %.0f\n",
@@ -932,11 +932,12 @@ create_cv_visualizations <- function(subsample_summary, threshold_bbe_summary,
     geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
     # Add sample size annotation at key points
     geom_text(
-      data = subsample_summary %>% filter(bbe_level %% 50 == 0),
+      data = subsample_summary %>%
+        filter(bbe_level %in% c(1, 5, 10, 20, 50, 100, 150, 200, 250, 300, 350)),
       aes(label = sprintf("n=%.0f", n_mean)),
       vjust = -1.5, size = 2.8, color = "grey40"
     ) +
-    scale_x_continuous(breaks = seq(50, 350, by = 50)) +
+    scale_x_continuous(breaks = seq(0, 350, by = 50)) +
     labs(
       title = "Prediction Accuracy vs Number of Batted Ball Events",
       subtitle = paste0("BBE Subsampling | Monte Carlo CV (",
@@ -1012,7 +1013,7 @@ create_cv_visualizations <- function(subsample_summary, threshold_bbe_summary,
     geom_line(color = "steelblue", linewidth = 1) +
     geom_point(color = "steelblue", size = 1.5) +
     facet_wrap(~ metric, scales = "free_y", ncol = 2) +
-    scale_x_continuous(breaks = seq(50, 350, by = 50)) +
+    scale_x_continuous(breaks = seq(0, 350, by = 50)) +
     labs(
       title = "Model Performance Metrics vs BBE (Subsampling)",
       subtitle = paste0("Monte Carlo CV (", N_ITERATIONS, " iterations)"),
