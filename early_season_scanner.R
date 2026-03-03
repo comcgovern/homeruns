@@ -759,17 +759,17 @@ scan_early_season <- function(model_path = MODEL_PATH,
         0.08 * coalesce(flyball_improvement, 0) +
         0.08 * age_factor
       ),
-      # Flag for early-season sample size
-      sample_flag = case_when(
-        bbe_y2 >= 100 ~ "solid",
-        bbe_y2 >= 75 ~ "moderate",
-        TRUE ~ "small"
+      # Confidence based on BBE count
+      confidence = case_when(
+        bbe_y2 > 100 ~ "Strong",
+        bbe_y2 > 20  ~ "Moderate",
+        TRUE         ~ "Low"
       )
     ) %>%
     select(
       batter, batter_name, stand,
       hr_per_bbe_y1, hr_per_bbe_y2, delta_hr_per_bbe,
-      predicted_delta_hr_bbe, breakout_score, sample_flag,
+      predicted_delta_hr_bbe, breakout_score, confidence,
       any_of("age"),
       any_of(c(
         "avg_la_y1", "delta_avg_la",
@@ -800,19 +800,19 @@ scan_early_season <- function(model_path = MODEL_PATH,
   
   top_15 <- results %>%
     head(15) %>%
-    select(batter_name, breakout_score, sample_flag, 
-           hr_per_bbe_y2, delta_avg_la, delta_hard_hit_rate, 
+    select(batter_name, breakout_score, confidence,
+           hr_per_bbe_y2, delta_avg_la, delta_hard_hit_rate,
            delta_ev_90th, bbe_y2)
-  
+
   print(top_15, n = 15)
-  
+
   cat("\n\n📉 REGRESSION WATCH (Bottom 10)\n")
   cat("Players whose process metrics are declining:\n\n")
-  
+
   bottom_10 <- results %>%
     tail(10) %>%
     arrange(breakout_score) %>%
-    select(batter_name, breakout_score, sample_flag,
+    select(batter_name, breakout_score, confidence,
            hr_per_bbe_y2, delta_avg_la, delta_hard_hit_rate,
            delta_ev_90th, bbe_y2)
   
@@ -821,14 +821,86 @@ scan_early_season <- function(model_path = MODEL_PATH,
   # Save results
   output_file <- sprintf("%s/early_scan_%s_%s.csv", OUT_DIR, scan_start, scan_end)
   readr::write_csv(results, output_file)
-  
+
+  # ========== GENERATE MARKDOWN REPORT ==========
+  report_file <- sprintf("%s/early_scan_report_%s_%s.md", OUT_DIR, scan_start, scan_end)
+
+  report_lines <- c(
+    sprintf("# Early Season Breakout Scan - %s", SCAN_YEAR),
+    "",
+    sprintf("**Generated:** %s", Sys.time()),
+    sprintf("**Scan period:** %s to %s", scan_start, as.character(scan_end)),
+    sprintf("**Baseline:** %d regular season", baseline_year),
+    sprintf("**Min BBE filter:** %d", min_bbe),
+    sprintf("**Players analyzed:** %d", nrow(results)),
+    "",
+    "## Top 15 Breakout Candidates",
+    "",
+    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Current HR/BBE | BBE |",
+    "|------|--------|------------------------|----------------|------------|---------------|-----|"
+  )
+
+  top15 <- results %>% head(15)
+  for (i in seq_len(nrow(top15))) {
+    row <- top15[i, ]
+    report_lines <- c(report_lines, sprintf(
+      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d |",
+      i,
+      ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
+      row$predicted_delta_hr_bbe,
+      row$breakout_score,
+      row$confidence,
+      row$hr_per_bbe_y2,
+      row$bbe_y2
+    ))
+  }
+
+  report_lines <- c(report_lines,
+    "",
+    "## Bottom 10 Regression Watch",
+    "",
+    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Current HR/BBE | BBE |",
+    "|------|--------|------------------------|----------------|------------|---------------|-----|"
+  )
+
+  bottom10_report <- results %>% tail(10) %>% arrange(breakout_score)
+  for (i in seq_len(nrow(bottom10_report))) {
+    row <- bottom10_report[i, ]
+    report_lines <- c(report_lines, sprintf(
+      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d |",
+      i,
+      ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
+      row$predicted_delta_hr_bbe,
+      row$breakout_score,
+      row$confidence,
+      row$hr_per_bbe_y2,
+      row$bbe_y2
+    ))
+  }
+
+  report_lines <- c(report_lines,
+    "",
+    "## Key Metrics Explained",
+    "",
+    "- **Predicted HR/BBE Change**: Model's predicted change in home runs per batted ball event vs last season",
+    "- **Breakout Score**: Composite score (45% model, 15% HR/BBE room, 12% LA improvement, 12% discipline, 8% flyball, 8% age)",
+    "- **Confidence**: Based on current season BBE count (Strong: >100, Moderate: >20, Low: ≤20)",
+    ""
+  )
+
+  writeLines(report_lines, report_file)
+  if (verbose) message("Markdown report saved to: ", report_file)
+
   cat("\n\n✅ Full results saved to: ", output_file, "\n")
+  cat("Report:       ", report_file, "\n")
   cat("============================================================\n")
-  
+
   # Return results invisibly
   invisible(list(
     results = results,
     new_players = new_players,
+    report_file = report_file,
+    csv_file = output_file,
     scan_date = scan_end,
     baseline_year = baseline_year
   ))

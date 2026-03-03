@@ -891,11 +891,11 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
         0.08 * coalesce(flyball_improvement, 0) +
         0.08 * age_factor
       ),
-      # Confidence based on spring training PAs
+      # Confidence based on spring training BBEs
       confidence = case_when(
-        pa_y2 >= 40 ~ "high",
-        pa_y2 >= 25 ~ "moderate",
-        TRUE ~ "low"
+        bbe_y2 > 100 ~ "Strong",
+        bbe_y2 > 20  ~ "Moderate",
+        TRUE         ~ "Low"
       ),
       # Estimated HR gain direction
       hr_gain_flag = case_when(
@@ -946,7 +946,7 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
     head(20) %>%
     select(batter_name, breakout_score, hr_gain_flag, confidence,
            predicted_delta_hr_bbe, hr_per_bbe_y1,
-           delta_avg_la, delta_hard_hit_rate, delta_ev_90th, pa_y2)
+           delta_avg_la, delta_hard_hit_rate, delta_ev_90th, bbe_y2, pa_y2)
 
   print(top_display, n = 20)
 
@@ -958,7 +958,7 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
     arrange(breakout_score) %>%
     select(batter_name, breakout_score, hr_gain_flag, confidence,
            predicted_delta_hr_bbe, hr_per_bbe_y1,
-           delta_avg_la, delta_hard_hit_rate, delta_ev_90th, pa_y2)
+           delta_avg_la, delta_hard_hit_rate, delta_ev_90th, bbe_y2, pa_y2)
 
   print(bottom_display, n = 10)
 
@@ -992,21 +992,22 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
     "",
     "## Top 20 Predicted HR Gainers",
     "",
-    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Last Year HR/BBE | ST PA |",
-    "|------|--------|------------------------|----------------|------------|-----------------|-------|"
+    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Last Year HR/BBE | ST BBE | ST PA |",
+    "|------|--------|------------------------|----------------|------------|-----------------|--------|-------|"
   )
 
   top20 <- results %>% head(20)
   for (i in seq_len(nrow(top20))) {
     row <- top20[i, ]
     report_lines <- c(report_lines, sprintf(
-      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d |",
+      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d | %d |",
       i,
       ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
       row$predicted_delta_hr_bbe,
       row$breakout_score,
       row$confidence,
       row$hr_per_bbe_y1,
+      row$bbe_y2,
       row$pa_y2
     ))
   }
@@ -1015,21 +1016,22 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
     "",
     "## Bottom 10 Predicted HR Decliners",
     "",
-    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Last Year HR/BBE | ST PA |",
-    "|------|--------|------------------------|----------------|------------|-----------------|-------|"
+    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Last Year HR/BBE | ST BBE | ST PA |",
+    "|------|--------|------------------------|----------------|------------|-----------------|--------|-------|"
   )
 
   bottom10 <- results %>% tail(10) %>% arrange(breakout_score)
   for (i in seq_len(nrow(bottom10))) {
     row <- bottom10[i, ]
     report_lines <- c(report_lines, sprintf(
-      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d |",
+      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d | %d |",
       i,
       ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
       row$predicted_delta_hr_bbe,
       row$breakout_score,
       row$confidence,
       row$hr_per_bbe_y1,
+      row$bbe_y2,
       row$pa_y2
     ))
   }
@@ -1039,8 +1041,8 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
     "## Key Metrics Explained",
     "",
     "- **Predicted HR/BBE Change**: Model's predicted change in home runs per batted ball event vs last season",
-    "- **Breakout Score**: Composite score weighting model prediction (31%), HR/BBE room (20%), launch angle improvement (15%), hard hit rate (12%), EV 90th (12%), bat tracking (10%)",
-    "- **Confidence**: Based on spring training PA count (high: 40+, moderate: 25-39, low: <25)",
+    "- **Breakout Score**: Composite score (45% model, 15% HR/BBE room, 12% LA improvement, 12% discipline, 8% flyball, 8% age)",
+    "- **Confidence**: Based on spring training BBE count (Strong: >100, Moderate: >20, Low: ≤20)",
     ""
   )
 

@@ -85,22 +85,14 @@ jobs:
           name: regular-season-breakout-scan
           path: |
             output/early_scan_*.csv
+            output/early_scan_report_*.md
           retention-days: 90
 
       - name: Write job summary
         run: |
-          CSV=$(ls -t output/early_scan_*.csv 2>/dev/null | head -1)
-          if [ -n "$CSV" ]; then
-            echo "### Regular Season Breakout Scan Results" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Scan file:** \`$(basename "$CSV")\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "#### Top 15 Breakout Candidates" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            # Convert CSV top rows to markdown table
-            head -1 "$CSV" | sed 's/,/|/g' | sed 's/^/|/' | sed 's/$/|/' >> "$GITHUB_STEP_SUMMARY"
-            head -1 "$CSV" | sed 's/[^,]*/---|/g' | sed 's/^/|/' >> "$GITHUB_STEP_SUMMARY"
-            tail -n +2 "$CSV" | head -15 | sed 's/,/|/g' | sed 's/^/|/' | sed 's/$/|/' >> "$GITHUB_STEP_SUMMARY"
+          REPORT=$(ls -t output/early_scan_report_*.md 2>/dev/null | head -1)
+          if [ -n "$REPORT" ]; then
+            cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No results generated." >> "$GITHUB_STEP_SUMMARY"
+            echo "No report generated." >> "$GITHUB_STEP_SUMMARY"
           fi
