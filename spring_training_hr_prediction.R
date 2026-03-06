@@ -1000,13 +1000,13 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
   for (i in seq_len(nrow(top20))) {
     row <- top20[i, ]
     report_lines <- c(report_lines, sprintf(
-      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d | %d |",
+      "| %d | %s | %+.1f%% | %.3f | %s | %.1f%% | %d | %d |",
       i,
       ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
-      row$predicted_delta_hr_bbe,
+      row$predicted_delta_hr_bbe * 100,
       row$breakout_score,
       row$confidence,
-      row$hr_per_bbe_y1,
+      row$hr_per_bbe_y1 * 100,
       row$bbe_y2,
       row$pa_y2
     ))
@@ -1024,13 +1024,13 @@ predict_spring_hr_gainers <- function(model_path = MODEL_PATH,
   for (i in seq_len(nrow(bottom10))) {
     row <- bottom10[i, ]
     report_lines <- c(report_lines, sprintf(
-      "| %d | %s | %+.4f | %.3f | %s | %.3f | %d | %d |",
+      "| %d | %s | %+.1f%% | %.3f | %s | %.1f%% | %d | %d |",
       i,
       ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
-      row$predicted_delta_hr_bbe,
+      row$predicted_delta_hr_bbe * 100,
       row$breakout_score,
       row$confidence,
-      row$hr_per_bbe_y1,
+      row$hr_per_bbe_y1 * 100,
       row$bbe_y2,
       row$pa_y2
     ))
