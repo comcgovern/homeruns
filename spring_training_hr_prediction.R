@@ -150,7 +150,7 @@ load_statcast_range <- function(start_date, end_date, game_type = "R", level = "
   # Step 1: Submit initial requests (like sabRmetrics does)
   if (verbose) message("Submitting initial API requests...")
   initial_requests <- lapply(payload$url, function(url) {
-    try(httr::GET(url, httr::timeout(1)), silent = TRUE)
+    try(httr::GET(url, httr::timeout(30)), silent = TRUE)
   })
 
   # Step 2: Download with proper timeout, retrying as needed
@@ -202,7 +202,7 @@ load_statcast_range <- function(start_date, end_date, game_type = "R", level = "
         next
       }
 
-      chunk_data <- try(readr::read_csv(content, show_col_types = FALSE), silent = TRUE)
+      chunk_data <- try(readr::read_csv(I(content), show_col_types = FALSE), silent = TRUE)
 
       if (inherits(chunk_data, "try-error")) {
         if (verbose) message("    ✗ CSV parse error")
