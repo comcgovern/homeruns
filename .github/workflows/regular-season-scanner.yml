@@ -10,7 +10,7 @@ on:
       min_bbe:
         description: 'Minimum batted ball events to include a player'
         required: false
-        default: '50'
+        default: '21'
       scan_end_date:
         description: 'End date for scan data (YYYY-MM-DD, blank for today)'
         required: false
@@ -74,7 +74,7 @@ jobs:
           }
 
           min_bbe <- "${{ github.event.inputs.min_bbe }}"
-          if (nchar(min_bbe) > 0 && min_bbe != "50") {
+          if (nchar(min_bbe) > 0 && min_bbe != "21") {
             MIN_BBE_SCAN <<- as.integer(min_bbe)
           }
 

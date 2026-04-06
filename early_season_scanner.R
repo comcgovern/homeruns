@@ -35,7 +35,7 @@ SCAN_END   <- Sys.Date()     # Today
 
 # Minimum BBE to include a player (lower = more players but noisier)
 # Recommendation: 50 in April, 75 in May, 100 by June
-MIN_BBE_SCAN <- 50
+MIN_BBE_SCAN <- 21
 
 # Output
 OUT_DIR <- "output"
