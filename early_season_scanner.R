@@ -319,7 +319,7 @@ aggregate_batter_season <- function(df, year, min_bbe = 50, verbose = TRUE) {
         if (swings > 0) whiffs / swings else NA_real_
       },
       chase_rate = {
-        outside <- zone %in% c(11, 12, 13, 14) | (is.na(zone) & !zone %in% 1:9)
+        outside <- zone %in% c(11, 12, 13, 14)
         outside_pitches <- sum(outside, na.rm = TRUE)
         outside_swings <- sum(outside & description %in% c(
           "swinging_strike", "swinging_strike_blocked",
@@ -371,6 +371,7 @@ aggregate_batter_season <- function(df, year, min_bbe = 50, verbose = TRUE) {
       bbe = n(),
       hr = sum(events == "home_run", na.rm = TRUE),
       avg_ev = mean(launch_speed, na.rm = TRUE),
+      ev_sd = sd(launch_speed, na.rm = TRUE),
       max_ev = safe_max(launch_speed),
       ev_90th = if (sum(!is.na(launch_speed)) > 0)
                   quantile(launch_speed, 0.9, na.rm = TRUE) else NA_real_,
@@ -378,13 +379,14 @@ aggregate_batter_season <- function(df, year, min_bbe = 50, verbose = TRUE) {
       la_sd = sd(launch_angle, na.rm = TRUE),
       hard_hit_rate = mean(launch_speed >= 95, na.rm = TRUE),
       sweet_spot_rate = mean(launch_angle >= 8 & launch_angle <= 32, na.rm = TRUE),
-      flyball_rate = mean(launch_angle > 25, na.rm = TRUE),
+      flyball_rate = mean(launch_angle > 25 & launch_angle <= 50, na.rm = TRUE),
+      popup_rate = mean(launch_angle > 50, na.rm = TRUE),
       pull_rate = mean(
         (stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42),
         na.rm = TRUE
       ),
       pull_fly_rate = mean(
-        launch_angle > 25 &
+        launch_angle > 25 & launch_angle <= 50 &
         ((stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42)),
         na.rm = TRUE
       ),
@@ -625,10 +627,10 @@ scan_early_season <- function(model_path = MODEL_PATH,
   
   # Metrics for deltas
   delta_metrics <- c(
-    "avg_ev", "max_ev", "ev_90th",
+    "avg_ev", "ev_sd", "max_ev", "ev_90th",
     "avg_la", "la_sd",
     "hard_hit_rate", "sweet_spot_rate",
-    "flyball_rate", "pull_fly_rate",
+    "flyball_rate", "popup_rate", "pull_fly_rate",
     "pull_rate",
     "avg_bat_speed", "avg_swing_length", "squared_up_rate",
     "whiff_rate", "chase_rate", "zone_contact_rate"
@@ -723,14 +725,16 @@ scan_early_season <- function(model_path = MODEL_PATH,
     mutate(
       # Breakout score (matches revised formula from hr_bbe_analysis.R)
       model_score = fixed_scale(predicted_delta_hr_bbe, "predicted_delta_hr_bbe"),
-      hr_bbe_room = -fixed_scale(hr_per_bbe_y2, "hr_per_bbe_y2"),
-      la_improvement = case_when(
-        is.na(avg_la_y1) | is.na(delta_avg_la) ~ 0,
-        avg_la_y1 < 20 & delta_avg_la > 0 ~ pmin(delta_avg_la / 5, 1.5),
-        avg_la_y1 > 35 & delta_avg_la < 0 ~ pmin(-delta_avg_la / 5, 1.5),
-        avg_la_y1 >= 20 & avg_la_y1 <= 35 ~ 0.5,
-        TRUE ~ 0
-      ),
+      hr_bbe_room = -fixed_scale(hr_per_bbe_y1, "hr_per_bbe_y1"),
+      la_improvement = {
+        la_y2 <- avg_la_y1 + delta_avg_la
+        opt <- 27.5
+        dist_y1 <- abs(avg_la_y1 - opt)
+        dist_y2 <- abs(la_y2 - opt)
+        improvement <- (dist_y1 - dist_y2) / 5
+        ifelse(is.na(avg_la_y1) | is.na(delta_avg_la), 0,
+               pmax(pmin(improvement, 1.5), -1.5))
+      },
       discipline_improvement = {
         disc <- rep(0, n())
         if (all(c("delta_whiff_rate", "delta_chase_rate") %in% names(cur_data()))) {
@@ -759,17 +763,20 @@ scan_early_season <- function(model_path = MODEL_PATH,
         0.08 * coalesce(flyball_improvement, 0) +
         0.08 * age_factor
       ),
-      # Confidence based on BBE count
+      # Projected HR: predicted HR/BBE rate × prior-season BBE (as season-length proxy)
+      projected_hr_rate = pmax(hr_per_bbe_y1 + predicted_delta_hr_bbe, 0),
+      projected_hr = round(projected_hr_rate * bbe_y1),
+      # Confidence based on current season BBE count
       confidence = case_when(
-        bbe_y2 > 100 ~ "Strong",
-        bbe_y2 > 20  ~ "Moderate",
-        TRUE         ~ "Low"
+        bbe_y2 >= 100 ~ "High",
+        bbe_y2 >= 50  ~ "Moderate",
+        TRUE          ~ "Low"
       )
     ) %>%
     select(
       batter, batter_name, stand,
       hr_per_bbe_y1, hr_per_bbe_y2, delta_hr_per_bbe,
-      predicted_delta_hr_bbe, breakout_score, confidence,
+      predicted_delta_hr_bbe, projected_hr, breakout_score, confidence,
       any_of("age"),
       any_of(c(
         "avg_la_y1", "delta_avg_la",
@@ -836,21 +843,22 @@ scan_early_season <- function(model_path = MODEL_PATH,
     "",
     "## Top 15 Breakout Candidates",
     "",
-    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Current HR/BBE | BBE |",
-    "|------|--------|------------------------|----------------|------------|---------------|-----|"
+    "| Rank | Player | Proj. HRs | Predicted HR/BBE Change | Breakout Score | Confidence | Last Year HR/BBE | BBE |",
+    "|------|--------|-----------|------------------------|----------------|------------|-----------------|-----|"
   )
 
   top15 <- results %>% head(15)
   for (i in seq_len(nrow(top15))) {
     row <- top15[i, ]
     report_lines <- c(report_lines, sprintf(
-      "| %d | %s | %+.1f%% | %.3f | %s | %.1f%% | %d |",
+      "| %d | %s | %d | %+.1f%% | %.3f | %s | %.1f%% | %d |",
       i,
       ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
+      row$projected_hr,
       row$predicted_delta_hr_bbe * 100,
       row$breakout_score,
       row$confidence,
-      row$hr_per_bbe_y2 * 100,
+      row$hr_per_bbe_y1 * 100,
       row$bbe_y2
     ))
   }
@@ -859,21 +867,22 @@ scan_early_season <- function(model_path = MODEL_PATH,
     "",
     "## Bottom 10 Regression Watch",
     "",
-    "| Rank | Player | Predicted HR/BBE Change | Breakout Score | Confidence | Current HR/BBE | BBE |",
-    "|------|--------|------------------------|----------------|------------|---------------|-----|"
+    "| Rank | Player | Proj. HRs | Predicted HR/BBE Change | Breakout Score | Confidence | Last Year HR/BBE | BBE |",
+    "|------|--------|-----------|------------------------|----------------|------------|-----------------|-----|"
   )
 
   bottom10_report <- results %>% tail(10) %>% arrange(breakout_score)
   for (i in seq_len(nrow(bottom10_report))) {
     row <- bottom10_report[i, ]
     report_lines <- c(report_lines, sprintf(
-      "| %d | %s | %+.1f%% | %.3f | %s | %.1f%% | %d |",
+      "| %d | %s | %d | %+.1f%% | %.3f | %s | %.1f%% | %d |",
       i,
       ifelse(is.na(row$batter_name), paste0("ID:", row$batter), row$batter_name),
+      row$projected_hr,
       row$predicted_delta_hr_bbe * 100,
       row$breakout_score,
       row$confidence,
-      row$hr_per_bbe_y2 * 100,
+      row$hr_per_bbe_y1 * 100,
       row$bbe_y2
     ))
   }
@@ -882,9 +891,11 @@ scan_early_season <- function(model_path = MODEL_PATH,
     "",
     "## Key Metrics Explained",
     "",
-    "- **Predicted HR/BBE Change**: Model's predicted change in home runs per batted ball event vs last season",
-    "- **Breakout Score**: Composite score (45% model, 15% HR/BBE room, 12% LA improvement, 12% discipline, 8% flyball, 8% age)",
-    "- **Confidence**: Based on current season BBE count (Strong: >100, Moderate: >20, Low: ≤20)",
+    "- **Proj. HRs**: Projected full-season HR count (predicted HR/BBE rate × prior-season BBE)",
+    "- **Predicted HR/BBE Change**: Model's predicted change in HR per batted ball event vs last season (e.g. +2.0% means model expects 2 more HRs per 100 BBE)",
+    "- **Last Year HR/BBE**: Prior full-season HR rate — the stable baseline used for ceiling and projection calculations",
+    "- **Breakout Score**: Composite score (45% model, 15% HR/BBE ceiling, 12% LA direction, 12% discipline, 8% flyball, 8% age)",
+    "- **Confidence**: Based on current season BBE count (High: ≥100, Moderate: ≥50, Low: <50)",
     ""
   )
 

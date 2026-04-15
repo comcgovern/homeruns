@@ -1,9 +1,9 @@
 name: Spring Training HR Prediction
 
 on:
-  # Run weekly during spring training (starts March to ensure sufficient data)
+  # Run weekly during spring training (Feb through early April)
   schedule:
-    - cron: '0 12 * 2-3 1'  # Every Monday at noon UTC in February and March
+    - cron: '0 12 * 2-4 1'  # Every Monday at noon UTC, February through April
   # Allow manual runs
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -41,9 +41,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.R_LIBS_USER }}
-          key: r-packages-${{ runner.os }}-${{ hashFiles('spring_training_hr_prediction.R') }}
+          key: r-4.3.2-packages-${{ runner.os }}-${{ hashFiles('spring_training_hr_prediction.R') }}
           restore-keys: |
-            r-packages-${{ runner.os }}-
+            r-4.3.2-packages-${{ runner.os }}-
 
       - name: Install R packages
         env:

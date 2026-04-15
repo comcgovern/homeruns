@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -41,9 +41,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.R_LIBS_USER }}
-          key: r-packages-${{ runner.os }}-${{ hashFiles('early_season_scanner.R') }}
+          key: r-4.3.2-packages-${{ runner.os }}-${{ hashFiles('early_season_scanner.R') }}
           restore-keys: |
-            r-packages-${{ runner.os }}-
+            r-4.3.2-packages-${{ runner.os }}-
 
       - name: Install R packages
         env:
@@ -66,16 +66,20 @@ jobs:
         shell: bash
 
       - name: Run early season breakout scanner
+        env:
+          INPUT_SCAN_END_DATE: ${{ github.event.inputs.scan_end_date }}
+          INPUT_MIN_BBE: ${{ github.event.inputs.min_bbe }}
         run: |
-          # Apply overrides from workflow inputs
-          end_date <- "${{ github.event.inputs.scan_end_date }}"
+          # Apply overrides via environment variables (avoids eval/parse injection)
+          end_date <- Sys.getenv("INPUT_SCAN_END_DATE", "")
           if (nchar(end_date) > 0) {
             SCAN_END <<- as.Date(end_date)
           }
 
-          min_bbe <- "${{ github.event.inputs.min_bbe }}"
-          if (nchar(min_bbe) > 0 && min_bbe != "21") {
-            MIN_BBE_SCAN <<- as.integer(min_bbe)
+          min_bbe_str <- Sys.getenv("INPUT_MIN_BBE", "21")
+          min_bbe_val <- suppressWarnings(as.integer(min_bbe_str))
+          if (!is.na(min_bbe_val)) {
+            MIN_BBE_SCAN <<- min_bbe_val
           }
 
           source("early_season_scanner.R")
