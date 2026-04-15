@@ -45,6 +45,16 @@ jobs:
           restore-keys: |
             r-4.3.2-packages-${{ runner.os }}-
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright and Chromium
+        run: |
+          npm install playwright
+          npx playwright install --with-deps chromium
+
       - name: Install R packages
         env:
           GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -52,7 +62,7 @@ jobs:
           install.packages(c(
             "dplyr", "tidyr", "purrr", "stringr", "lubridate",
             "readr", "tibble", "gbm", "httr", "jsonlite",
-            "remotes"
+            "glue", "processx", "remotes"
           ), repos = "https://cloud.r-project.org")
           remotes::install_github("saberpowers/sabRmetrics")
         shell: Rscript {0}
@@ -85,6 +95,10 @@ jobs:
           source("early_season_scanner.R")
         shell: Rscript {0}
 
+      - name: Generate graphics
+        run: Rscript hr_graphics_pipeline.R
+        shell: bash
+
       - name: Upload results as artifact
         uses: actions/upload-artifact@v4
         with:
@@ -92,6 +106,9 @@ jobs:
           path: |
             output/early_scan_*.csv
             output/early_scan_report_*.md
+            output/hr_gainers.png
+            output/hr_losers.png
+            output/hr_model_graphic.html
           retention-days: 90
 
       - name: Write job summary
