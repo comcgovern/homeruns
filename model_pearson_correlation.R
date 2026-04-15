@@ -188,7 +188,7 @@ aggregate_batter_season <- function(df, year, min_bbe = 150, verbose = TRUE) {
         if (swings > 0) whiffs / swings else NA_real_
       },
       chase_rate = {
-        outside <- zone %in% c(11, 12, 13, 14) | (is.na(zone) & !zone %in% 1:9)
+        outside <- zone %in% c(11, 12, 13, 14)
         outside_pitches <- sum(outside, na.rm = TRUE)
         outside_swings <- sum(outside & description %in% c(
           "swinging_strike", "swinging_strike_blocked",
@@ -228,6 +228,7 @@ aggregate_batter_season <- function(df, year, min_bbe = 150, verbose = TRUE) {
       bbe = n(),
       hr = sum(events == "home_run", na.rm = TRUE),
       avg_ev = mean(launch_speed, na.rm = TRUE),
+      ev_sd = sd(launch_speed, na.rm = TRUE),
       max_ev = safe_max(launch_speed),
       ev_90th = if (sum(!is.na(launch_speed)) > 0)
                   quantile(launch_speed, 0.9, na.rm = TRUE) else NA_real_,
@@ -239,12 +240,13 @@ aggregate_batter_season <- function(df, year, min_bbe = 150, verbose = TRUE) {
       optimal_hr_rate = mean(
         launch_angle >= 25 & launch_angle <= 35 & launch_speed >= 95, na.rm = TRUE
       ),
-      flyball_rate = mean(launch_angle > 25, na.rm = TRUE),
+      flyball_rate = mean(launch_angle > 25 & launch_angle <= 50, na.rm = TRUE),
+      popup_rate = mean(launch_angle > 50, na.rm = TRUE),
       pull_rate = mean(
         (stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42), na.rm = TRUE
       ),
       pull_fly_rate = mean(
-        launch_angle > 25 &
+        launch_angle > 25 & launch_angle <= 50 &
         ((stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42)),
         na.rm = TRUE
       ),

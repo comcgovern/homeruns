@@ -400,8 +400,10 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
         if (swings > 0) whiffs / swings else NA_real_
       },
       # Chase rate: swings at pitches outside the zone / pitches outside zone
+      # Only count pitches with explicit outside-zone codes (11-14); NA zone means
+      # pitch classification is missing (e.g. IBB), not "outside the zone".
       chase_rate = {
-        outside <- zone %in% c(11, 12, 13, 14) | (is.na(zone) & !zone %in% 1:9)
+        outside <- zone %in% c(11, 12, 13, 14)
         outside_pitches <- sum(outside, na.rm = TRUE)
         outside_swings <- sum(outside & description %in% c(
           "swinging_strike", "swinging_strike_blocked",
@@ -450,6 +452,7 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
 
       # Exit velocity
       avg_ev = mean(launch_speed, na.rm = TRUE),
+      ev_sd = sd(launch_speed, na.rm = TRUE),   # Contact consistency: lower SD = more repeatable
       max_ev = safe_max(launch_speed),
       ev_90th = if (sum(!is.na(launch_speed)) > 0)
                   quantile(launch_speed, 0.9, na.rm = TRUE) else NA_real_,
@@ -469,8 +472,12 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
         na.rm = TRUE
       ),
 
-      # Flyball rate: launch angle > 25 degrees (fly balls and popups)
-      flyball_rate = mean(launch_angle > 25, na.rm = TRUE),
+      # Flyball rate: launch angle 25-50 degrees (true fly balls, excluding popups)
+      # Popups (>50 deg) are near-automatic outs and dilute power signal
+      flyball_rate = mean(launch_angle > 25 & launch_angle <= 50, na.rm = TRUE),
+
+      # Popup rate: launch angle > 50 degrees (tracked separately as a negative signal)
+      popup_rate = mean(launch_angle > 50, na.rm = TRUE),
 
       # Spray angle (pull tendency)
       avg_spray_angle = mean(hc_x - 125.42, na.rm = TRUE),
@@ -479,9 +486,9 @@ aggregate_batter_season <- function(df, year, verbose = TRUE) {
         na.rm = TRUE
       ),
 
-      # Pull flyball rate: flyballs hit to pull side (HR sweet spot)
+      # Pull flyball rate: true fly balls (not popups) hit to pull side (HR sweet spot)
       pull_fly_rate = mean(
-        launch_angle > 25 &
+        launch_angle > 25 & launch_angle <= 50 &
         ((stand == "R" & hc_x < 125.42) | (stand == "L" & hc_x > 125.42)),
         na.rm = TRUE
       ),
@@ -607,10 +614,10 @@ compute_deltas <- function(year1_data, year2_data, verbose = TRUE) {
   
   # Metrics to compute deltas for
   delta_metrics <- c(
-    "avg_ev", "max_ev", "ev_90th",
+    "avg_ev", "ev_sd", "max_ev", "ev_90th",
     "avg_la", "la_sd",
     "hard_hit_rate", "barrel_rate", "sweet_spot_rate", "optimal_hr_rate",
-    "flyball_rate", "pull_fly_rate",
+    "flyball_rate", "popup_rate", "pull_fly_rate",
     "pull_rate",
     "avg_bat_speed", "avg_swing_length", "squared_up_rate",
     "whiff_rate", "chase_rate", "zone_contact_rate"
@@ -677,22 +684,25 @@ fit_gbm_model <- function(delta_data, verbose = TRUE) {
   # Predictor columns (the deltas)
   # NOTE: Excluding barrel_rate and optimal_hr_rate - these are too close to the outcome
   # (they essentially measure "did you hit more HR-type batted balls")
+  # ev_sd: decreasing EV SD (more consistent contact) with stable/improving avg EV = good
+  # popup_rate: increasing popup rate is a negative signal (dilutes true flyball gains)
   predictor_cols <- c(
-    "delta_avg_ev", "delta_max_ev", "delta_ev_90th",
+    "delta_avg_ev", "delta_ev_sd", "delta_max_ev", "delta_ev_90th",
     "delta_avg_la", "delta_la_sd",
-    "delta_hard_hit_rate",  # Keep this - it's EV-based only, not outcome-based
+    "delta_hard_hit_rate",  # EV-based only, not outcome-based
     "delta_sweet_spot_rate",  # LA-based only
     "delta_flyball_rate",
+    "delta_popup_rate",      # Negative signal: more popups = worse contact quality
     "delta_pull_rate",
     "delta_pull_fly_rate",
     "delta_avg_bat_speed", "delta_avg_swing_length", "delta_squared_up_rate",
     "delta_whiff_rate", "delta_chase_rate", "delta_zone_contact_rate"
   )
 
-  # Also include Year 1 levels as predictors (room to grow)
-  # Excluding barrel_rate_y1 for same reason
+  # Also include Year 1 levels as predictors (room to grow / baseline context)
+  # Excluding barrel_rate_y1 for same reason as barrel_rate
   level_cols <- c(
-    "avg_ev_y1", "avg_la_y1",
+    "avg_ev_y1", "ev_sd_y1", "avg_la_y1",
     "hard_hit_rate_y1",
     "pull_rate_y1", "hr_per_bbe_y1",
     "flyball_rate_y1",
@@ -791,9 +801,12 @@ fit_gbm_model <- function(delta_data, verbose = TRUE) {
   }
 
   # Compute scaling parameters from training data for consistent scoring later
-  # These fixed parameters prevent score drift when applied to different cohorts
+  # These fixed parameters prevent score drift when applied to different cohorts.
+  # Key "hr_per_bbe_y1" captures the prior-season HR/BBE distribution, used for
+  # the room-to-grow component in the breakout score (stable baseline, not noisy
+  # current-season rate).
   scaling_params <- list()
-  scale_cols <- c("predicted_delta_hr_bbe", "hr_per_bbe_y2",
+  scale_cols <- c("predicted_delta_hr_bbe", "hr_per_bbe_y1",
                   "delta_hard_hit_rate", "delta_ev_90th",
                   "delta_avg_swing_length", "delta_avg_bat_speed",
                   "delta_flyball_rate", "delta_whiff_rate", "delta_chase_rate")
@@ -909,19 +922,24 @@ identify_breakout_candidates <- function(delta_data, gbm_result, year2_data,
       #    tracking deltas plus baseline levels, so we don't repeat those here)
       model_score = fixed_scale(predicted_delta_hr_bbe, "predicted_delta_hr_bbe"),
 
-      # 2. Room to grow: low HR/BBE in baseline = higher ceiling
-      hr_bbe_room = -fixed_scale(hr_per_bbe_y2, "hr_per_bbe_y2"),
+      # 2. Room to grow: low prior-season HR/BBE = higher ceiling
+      # Uses hr_per_bbe_y1 (stable full-season baseline) not the noisier y2 rate
+      hr_bbe_room = -fixed_scale(hr_per_bbe_y1, "hr_per_bbe_y1"),
 
-      # 3. LA direction adjustment (not a GBM input — this captures *where*
-      #    a player's LA sits relative to the optimal HR band, which is
-      #    nonlinear and directional in a way the GBM delta can miss)
-      la_improvement = case_when(
-        is.na(avg_la_y1) | is.na(delta_avg_la) ~ 0,
-        avg_la_y1 < 20 & delta_avg_la > 0 ~ pmin(delta_avg_la / 5, 1.5),
-        avg_la_y1 > 35 & delta_avg_la < 0 ~ pmin(-delta_avg_la / 5, 1.5),
-        avg_la_y1 >= 20 & avg_la_y1 <= 35 ~ 0.5,  # Already optimal
-        TRUE ~ 0
-      ),
+      # 3. LA direction adjustment: rewards movement toward the optimal HR band
+      #    (20-35 degrees), penalizes movement away. Continuous and symmetric:
+      #    a +5 deg move from 15->20 (entering the zone) scores the same as a
+      #    +5 deg move from 30->35 (staying in zone at the edge), which is more
+      #    coherent than the old piecewise formula. Capped at ±1.5 z-score units.
+      la_improvement = {
+        la_y2 <- avg_la_y1 + delta_avg_la
+        opt <- 27.5  # Center of 20-35 degree HR band
+        dist_y1 <- abs(avg_la_y1 - opt)
+        dist_y2 <- abs(la_y2 - opt)
+        improvement <- (dist_y1 - dist_y2) / 5
+        ifelse(is.na(avg_la_y1) | is.na(delta_avg_la), 0,
+               pmax(pmin(improvement, 1.5), -1.5))
+      },
 
       # 4. Plate discipline improvement (whiff rate DOWN and chase rate DOWN
       #    are positive signals not in the original model)
@@ -964,12 +982,18 @@ identify_breakout_candidates <- function(delta_data, gbm_result, year2_data,
         0.12 * coalesce(discipline_improvement, 0) +
         0.08 * coalesce(flyball_improvement, 0) +
         0.08 * age_factor
-      )
+      ),
+
+      # Projected HR: translate HR/BBE rate into a concrete HR count estimate.
+      # projected_hr_rate clamps to zero (can't have negative HR rate).
+      # Uses bbe_y1 as the expected full-season BBE proxy.
+      projected_hr_rate = pmax(hr_per_bbe_y1 + predicted_delta_hr_bbe, 0),
+      projected_hr = round(projected_hr_rate * bbe_y1)
     ) %>%
     select(
       batter, batter_name, stand,
       hr_per_bbe_y1, hr_per_bbe_y2, delta_hr_per_bbe,
-      predicted_delta_hr_bbe, breakout_score,
+      predicted_delta_hr_bbe, projected_hr, breakout_score,
       any_of("age"),
       # Key metrics for interpretation (use any_of for flexibility)
       any_of(c(

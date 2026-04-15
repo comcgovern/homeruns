@@ -34,10 +34,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.R_LIBS_USER }}
-          key: r-packages-cv-${{ runner.os }}-${{ hashFiles('model_pearson_correlation.R') }}
+          key: r-4.3.2-packages-cv-${{ runner.os }}-${{ hashFiles('model_pearson_correlation.R') }}
           restore-keys: |
-            r-packages-cv-${{ runner.os }}-
-            r-packages-${{ runner.os }}-
+            r-4.3.2-packages-cv-${{ runner.os }}-
+            r-4.3.2-packages-${{ runner.os }}-
 
       - name: Install R packages
         env:
