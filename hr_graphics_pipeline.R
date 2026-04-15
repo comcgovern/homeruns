@@ -48,9 +48,11 @@ gainers <- df |>
   arrange(desc(translated_dhr)) |>
   slice_head(n = N_PLAYERS) |>
   transmute(
-    name = batter_name,
-    rate = round(predicted_delta_hr_bbe, 5),
-    dhr  = round(translated_dhr, 2)
+    name     = batter_name,
+    rate     = round(predicted_delta_hr_bbe, 5),
+    dhr      = round(translated_dhr, 1),
+    hr_y1    = as.integer(round(hr_per_bbe_y1 * bbe_y1)),
+    proj_hr  = as.integer(projected_hr)
   )
 
 losers <- df |>
@@ -58,9 +60,11 @@ losers <- df |>
   arrange(translated_dhr) |>
   slice_head(n = N_PLAYERS) |>
   transmute(
-    name = batter_name,
-    rate = round(predicted_delta_hr_bbe, 5),
-    dhr  = round(translated_dhr, 2)
+    name     = batter_name,
+    rate     = round(predicted_delta_hr_bbe, 5),
+    dhr      = round(translated_dhr, 1),
+    hr_y1    = as.integer(round(hr_per_bbe_y1 * bbe_y1)),
+    proj_hr  = as.integer(projected_hr)
   )
 
 cat(sprintf("✓ Computed %d gainers, %d losers\n", nrow(gainers), nrow(losers)))
@@ -88,8 +92,8 @@ cat(sprintf("✓ Scan label: %s\n", scan_label))
 
 df_to_js <- function(tbl) {
   rows <- map_chr(seq_len(nrow(tbl)), \(i)
-    sprintf('  { name: "%s", rate: %s, dhr: %s }',
-            tbl$name[i], tbl$rate[i], tbl$dhr[i])
+    sprintf('  { name: "%s", rate: %s, dhr: %s, hr_y1: %d, proj_hr: %d }',
+            tbl$name[i], tbl$rate[i], tbl$dhr[i], tbl$hr_y1[i], tbl$proj_hr[i])
   )
   paste0("[\n", paste(rows, collapse = ",\n"), "\n]")
 }
@@ -136,19 +140,17 @@ function fmt(n, d) {
   return sign + Math.abs(n).toFixed(d);
 }
 
-function HRRow({ row, i, accent, maxDhr, mode }) {
-  const barPct = (Math.abs(row.dhr) / maxDhr) * 100;
+function HRRow({ row, i, accent }) {
+  const sign = row.dhr >= 0 ? "+" : "\u2212";
+  const absDhr = Math.abs(row.dhr).toFixed(1);
   return (
     <div className="hr-row" style={{ animationDelay: `${i * 50}ms` }}>
       <div className="rank">{i + 1}</div>
       <div className="player-name">{row.name}</div>
       <div className="rate-col" style={{ color: accent }}>{fmt(row.rate, 3)}</div>
-      <div className="bar-col">
-        <div className="bar-track">
-          <div className="bar-fill" style={{ width: `${barPct}%`, background: accent }} />
-        </div>
-        <div className="dhr-num">{fmt(row.dhr, 1)}</div>
-      </div>
+      <div className="stat-col">{row.hr_y1}</div>
+      <div className="stat-col">{row.proj_hr}</div>
+      <div className="stat-col delta-col" style={{ color: accent }}>{sign}{absDhr}</div>
     </div>
   );
 }
@@ -158,7 +160,6 @@ function App() {
   const isGainers = mode === "gainers";
   const data   = isGainers ? gainersData : losersData;
   const accent = isGainers ? GAINER_COLOR : LOSER_COLOR;
-  const maxDhr = Math.max(...data.map(d => Math.abs(d.dhr)));
 
   return (
     <div className="app">
@@ -167,8 +168,8 @@ function App() {
           ["losers",  "\u25bc Losers",  LOSER_COLOR]].map(([v, label, c]) => (
           <button key={v} className="toggle-btn"
             onClick={() => setMode(v)}
-            style={{ background: mode === v ? c : "#161616",
-                     color:      mode === v ? "#000" : "#555" }}>
+            style={{ background: mode === v ? c : "#1a1a1a",
+                     color:      mode === v ? "#000" : "#666" }}>
             {label}
           </button>
         ))}
@@ -191,19 +192,25 @@ function App() {
           <div className="col-label" />
           <div className="col-label">Player</div>
           <div className="col-label right">\u0394 HR/BBE</div>
-          <div className="col-label bar-head">Proj \u0394HR</div>
+          <div className="col-label right">Prev HR</div>
+          <div className="col-label right">Proj HR</div>
+          <div className="col-label right">\u0394 HR</div>
         </div>
 
         {data.map((row, i) => (
           <HRRow key={`${mode}-${i}`}
-            row={row} i={i} accent={accent} maxDhr={maxDhr} mode={mode} />
+            row={row} i={i} accent={accent} />
         ))}
 
         <div className="card-footer">
           <div className="footer-note">
             \u0394 HR/BBE \u2014 model-predicted rate change vs prior year
             \u00a0\u00b7\u00a0
-            Proj \u0394HR \u2014 rate \u00d7 prior-yr BBE volume
+            Prev HR \u2014 prior-season home runs
+            \u00a0\u00b7\u00a0
+            Proj HR \u2014 projected home runs this season
+            \u00a0\u00b7\u00a0
+            \u0394 HR \u2014 projected change
           </div>
         </div>
       </div>
@@ -220,40 +227,37 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
   .toggle-btn   { padding:7px 20px; border:none; cursor:pointer; font-family:"Karla",sans-serif;
                   font-size:11px; font-weight:700; letter-spacing:1.8px;
                   text-transform:uppercase; border-radius:2px; }
-  .card         { width:540px; background:#0d0d0d; border:1px solid #1e1e1e; overflow:hidden; }
+  .card         { width:540px; background:#0d0d0d; border:1px solid #2a2a2a; overflow:hidden; }
   .card-header  { padding:22px 28px 18px; }
   .header-inner { display:flex; justify-content:space-between; align-items:flex-end; }
   .card-title   { font-family:"Bebas Neue",cursive; font-size:34px; color:#f2f2f2;
                   letter-spacing:2.5px; line-height:1; margin-bottom:5px; }
   .card-sub     { font-family:"Karla",sans-serif; font-size:10px; font-weight:600;
-                  color:#444; letter-spacing:1.8px; text-transform:uppercase; }
-  .card-icon    { font-family:"Bebas Neue",cursive; font-size:56px; line-height:1; opacity:0.12; }
-  .col-headers  { display:grid; grid-template-columns:22px 1fr 80px 180px;
+                  color:#888; letter-spacing:1.8px; text-transform:uppercase; }
+  .card-icon    { font-family:"Bebas Neue",cursive; font-size:56px; line-height:1; opacity:0.25; }
+  .col-headers  { display:grid; grid-template-columns:22px 1fr 80px 52px 52px 52px;
                   padding:7px 28px; background:#0a0a0a;
-                  border-top:1px solid #1a1a1a; border-bottom:1px solid #1a1a1a; }
+                  border-top:1px solid #222; border-bottom:1px solid #222; }
   .col-label    { font-family:"Karla",sans-serif; font-size:9px; font-weight:700;
-                  letter-spacing:1.5px; color:#363636; text-transform:uppercase; }
-  .col-label.right    { text-align:right; }
-  .col-label.bar-head { padding-left:14px; }
+                  letter-spacing:1.5px; color:#666; text-transform:uppercase; }
+  .col-label.right { text-align:right; }
   @keyframes fadeSlide {
     from { opacity:0; transform:translateX(-6px); }
     to   { opacity:1; transform:translateX(0); }
   }
-  .hr-row       { display:grid; grid-template-columns:22px 1fr 80px 180px;
-                  padding:11px 28px; border-bottom:1px solid #141414;
+  .hr-row       { display:grid; grid-template-columns:22px 1fr 80px 52px 52px 52px;
+                  padding:11px 28px; border-bottom:1px solid #1e1e1e;
                   align-items:center; animation:fadeSlide 0.35s ease both; }
   .hr-row:last-child { border-bottom:none; }
-  .rank         { font-family:"DM Mono",monospace; font-size:10px; color:#2e2e2e; font-weight:500; }
+  .rank         { font-family:"DM Mono",monospace; font-size:10px; color:#555; font-weight:500; }
   .player-name  { font-family:"Karla",sans-serif; font-size:15px; font-weight:500; color:#e6e6e6; }
   .rate-col     { font-family:"DM Mono",monospace; font-size:12.5px; font-weight:500;
                   text-align:right; letter-spacing:-0.3px; }
-  .bar-col      { display:flex; align-items:center; gap:10px; padding-left:14px; }
-  .bar-track    { flex:1; height:5px; background:#1c1c1c; border-radius:1px; overflow:hidden; }
-  .bar-fill     { height:100%; border-radius:1px; opacity:0.9; }
-  .dhr-num      { font-family:"DM Mono",monospace; font-size:14px; font-weight:500;
-                  color:#f0f0f0; min-width:44px; text-align:right; letter-spacing:-0.5px; }
-  .card-footer  { padding:9px 28px 13px; border-top:1px solid #161616; background:#0a0a0a; }
-  .footer-note  { font-family:"Karla",sans-serif; font-size:9px; color:#2e2e2e;
+  .stat-col     { font-family:"DM Mono",monospace; font-size:13px; font-weight:500;
+                  text-align:right; color:#c8c8c8; letter-spacing:-0.3px; }
+  .delta-col    { font-size:14px; font-weight:600; }
+  .card-footer  { padding:9px 28px 13px; border-top:1px solid #1e1e1e; background:#0a0a0a; }
+  .footer-note  { font-family:"Karla",sans-serif; font-size:9px; color:#666;
                   letter-spacing:0.3px; line-height:1.6; }
 </style>
 </body>
