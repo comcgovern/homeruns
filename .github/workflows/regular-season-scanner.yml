@@ -3,7 +3,7 @@ name: Regular Season Breakout Scanner
 on:
   # Run weekly during the regular season (Apr-Sep)
   schedule:
-    - cron: '0 12 * 4-9 1'  # Every Monday at noon UTC, Apr-Sep
+    - cron: '0 12 * 4-5 1'  # Every Monday at noon UTC, Apr-Sep
   # Allow manual runs
   workflow_dispatch:
     inputs:
